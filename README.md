@@ -15,12 +15,12 @@ The application uses Next.js 15, React 19, TypeScript, FastAPI, Python, SQLAlche
 
 ## Installation
 
-The application and installer are both **v1.0.4**. Download the installer and checksum file from the [v1.0.4 Release](https://github.com/MoonlessWanderer/PartnerConsole/releases/tag/v1.0.4).
+The application and installer are both **v1.0.5**. Download the installer and checksum file from the [v1.0.5 Release](https://github.com/MoonlessWanderer/PartnerConsole/releases/tag/v1.0.5).
 
 ```bash
 work_dir="$(mktemp -d)"
 cd "$work_dir"
-release_url=https://github.com/MoonlessWanderer/PartnerConsole/releases/download/v1.0.4
+release_url=https://github.com/MoonlessWanderer/PartnerConsole/releases/download/v1.0.5
 curl -fsSLO "$release_url/partnerconsole.sh"
 curl -fsSLO "$release_url/SHA256SUMS"
 sha256sum --check --strict SHA256SUMS
@@ -45,7 +45,7 @@ Use an SSH tunnel to reach the local web and API ports before configuring a publ
 
 ## Installer commands
 
-These commands describe Installer `v1.0.4`.
+These commands describe Installer `v1.0.5`.
 
 | Command | Action |
 | --- | --- |
@@ -59,7 +59,32 @@ These commands describe Installer `v1.0.4`.
 | `sudo partnerconsole domain` | Open Domain & SSL in an interactive terminal |
 | `sudo partnerconsole credentials` | Maintain the administrator credentials through an interactive prompt |
 
-To change installer versions on an existing installation, download and verify the target tag, then run `sudo bash ./partnerconsole.sh update`. Update upgrades the API and web services together and rebuilds the web client with the installed `config/web.env`. Refresh any tab opened before the update and review a fresh quote before confirming a paid action. See the [manual installation guide](dev/docs/guides/INSTALL.md) and [production maintenance procedure](dev/docs/guides/production-bootstrap.md) for deployment and recovery details.
+### Upgrade an existing v1.0.4 installation
+
+On the Ubuntu host, stop Partner Console, take a database backup, save protected copies of the application environment files, and start the current installation again.
+
+```bash
+sudo partnerconsole stop
+sudo partnerconsole backup
+sudo partnerconsole start
+```
+
+Download the installer and checksum for the **target** release into a new directory. Verify the checksum before running Update.
+
+```bash
+work_dir="$(mktemp -d)"
+cd "$work_dir"
+release_url=https://github.com/MoonlessWanderer/PartnerConsole/releases/download/v1.0.5
+curl -fsSLO "$release_url/partnerconsole.sh"
+curl -fsSLO "$release_url/SHA256SUMS"
+sha256sum --check --strict SHA256SUMS
+sudo bash ./partnerconsole.sh update
+sudo partnerconsole status
+```
+
+Update checks the target tag and release tree, detects local changes to managed files, and rebuilds the web client with the existing `config/web.env`. It keeps the configured database and application settings. After Update, sign in using the existing account, refresh any open tabs, and review a fresh quote before confirming a paid action.
+
+For manual installation and recovery, see the [manual installation guide](dev/docs/guides/INSTALL.md) and [production maintenance procedure](dev/docs/guides/production-bootstrap.md).
 
 ## Domain & SSL
 
@@ -151,4 +176,4 @@ Backend and frontend tests live under `dev/tests/`. The simulated V2Board panel 
 
 ## Release notes
 
-See the [Installer v1.0.4 release notes](dev/docs/releases/v1.0.4/RELEASE_NOTES.md) for financial fixes, upgrade instructions, and known limitations.
+See the [Installer v1.0.5 release notes](dev/docs/releases/v1.0.5/RELEASE_NOTES.md) for financial fixes, upgrade instructions, and known limitations.

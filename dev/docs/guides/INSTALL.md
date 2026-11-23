@@ -1,18 +1,8 @@
-# نصب قابل‌انتقال Partner Console 1.0.4
+# نصب دستی Partner Console 1.0.5
 
-روی Ubuntu 24.04:
+برای نصب یا ارتقای مدیریت‌شده در Ubuntu 24.04، نصاب و checksum نسخهٔ هدف را طبق [راهنمای README](../../../README.md#installation) دریافت و بررسی کنید.
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/MoonlessWanderer/PartnerConsole/v1.0.3-rc.3/partnerconsole.sh -o /tmp/partnerconsole.sh
-sha256sum /tmp/partnerconsole.sh
-sudo bash /tmp/partnerconsole.sh
-```
-
-پیش از اجرا، SHA256 چاپ‌شده باید با مقدار اعلام‌شده برای Installer `v1.0.3-rc.3` یکی باشد.
-
-منو این‌هاست: Install، Start، Stop، Restart، Update، Status، Logs، Backup & Restore، Domain & SSL، Admin Credentials. Backup فقط dump دیتابیس است و Restore در MySQL اتمیک نیست. اسکریپت را داخل bash پایپ نکنید. برنامه نسخهٔ ۱.۰.۰ مانده است. نصب و Update فقط tag `v1.0.3-rc.3` را می‌گیرند، نه شاخهٔ `main` و نه tagهای `v1.0.0` و `v1.0.1`. اگر فایلی از نسخهٔ نصب‌شده عوض شده باشد، Update متوقف می‌شود و آن فایل را پاک نمی‌کند. Status سلامت را فقط وقتی می‌پذیرد که خود همین نصب روی پورت گوش بدهد. اگر پورت 8741 یا 3741 مال برنامهٔ دیگری باشد، Start شروع نمی‌شود. مسیر پیش‌فرض `/srv/partnerconsole` است و با `PARTNERCONSOLE_ROOT` عوض می‌شود. فرمان root-owned در `/usr/local/bin/partnerconsole` بیرون از پوشهٔ نصب است. Domain & SSL در صورت انتخاب، فقط `sites-available/partnerconsole.conf`، لینک enabled آن، `/var/lib/partnerconsole/acme`، hook تمدید و در صورت تأیید بوت، `partnerconsole.service` را اضافه می‌کند. Nginx و Certbot فقط بعد از تأیید صریح در همین گزینه از مخزن Ubuntu نصب می‌شوند و Install یا Update عادی آن‌ها را نصب نمی‌کند. اگر همان دامنه از قبل فعال باشد، گواهی دوباره صادر نمی‌شود. شکست build یا nginx تنظیم قبلی و خروجی build قبلی را برمی‌گرداند. تمدید موفق فقط بعد از `nginx -t` سرویس را reload می‌کند. DNS با dig و رکوردهای جداگانهٔ A و AAAA بررسی می‌شود و آدرس IPv4-mapped رکورد AAAA شمرده نمی‌شود. اگر dig نباشد، بستهٔ `bind9-dnsutils` فقط با تأیید جدا نصب می‌شود. بررسی HTTPS اعتبار گواهی را خاموش نمی‌کند.
-
-بعد از نصب اول، منو با `sudo partnerconsole` باز می‌شود. برنامه با کاربر `ppv1` اجرا می‌شود. `install.sh` همچنان بستهٔ سیستمی نصب نمی‌کند؛ نصب Python و Node و MySQL فقط کار همین منو است.
+این صفحه اجرای دستی `install.sh` از یک درخت سورس تأییدشده و آماده‌کردن تنظیمات، پایگاه و سرویس‌ها را توضیح می‌دهد.
 
 پوشهٔ نصب را خودتان انتخاب می‌کنید. `bash install.sh` اول وارد همان پوشه‌ای می‌شود که اسکریپت داخل آن است، بعد تنظیم، داده، لاگ، cache، فایل موقت و backup را فقط زیر همان پوشه می‌سازد. لازم نیست پوشهٔ جاری قابل‌نوشتن باشد. با جابه‌جا کردن پوشه لازم نیست مسیر ثابتی را در اسکریپت‌ها ویرایش کنید؛ بعد از جابه‌جایی یک بار دیگر `bash install.sh` را اجرا کنید تا محیط Python دوباره ساخته شود. `install.sh` اسکریپت‌های پوسته را 755 می‌کند و `restart.sh` توقف و شروع را با `bash` صدا می‌زند، پس کپی بدون بیت اجرا هم بعد از نصب کار می‌کند.
 

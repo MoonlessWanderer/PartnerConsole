@@ -19,10 +19,12 @@ jobs:
       - name: Prepare disposable candidate origin
         shell: bash
         run: |
-          test "$(git rev-list --count HEAD)" = 1
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          tag="$(sed -n 's/^RELEASE_TAG="\([^"]*\)"$/\1/p' partnerconsole.sh)"
+          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
           origin="$RUNNER_TEMP/fresh-candidate.git"
           git clone --quiet --bare --no-local --no-tags "$GITHUB_WORKSPACE" "$origin"
-          git -C "$origin" tag v1.0.4 "$GITHUB_SHA"
+          git -C "$origin" tag "$tag" "$GITHUB_SHA"
       - name: Remove the disposable runner's existing MySQL packages
         shell: bash
         run: |
