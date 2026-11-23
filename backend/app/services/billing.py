@@ -28,6 +28,10 @@ def floor_money(qty, price: int) -> int:
     return int((D(qty) * Decimal(int(price))).to_integral_value(rounding=ROUND_FLOOR))
 
 
+def reset_cost_toman(raw_used: int, price_per_gb: int) -> int:
+    return raw_used * price_per_gb // int(BYTES_PER_GB)
+
+
 def gb_to_bytes(gb) -> int:
     return int((D(gb) * BYTES_PER_GB).to_integral_value(rounding=ROUND_HALF_UP))
 

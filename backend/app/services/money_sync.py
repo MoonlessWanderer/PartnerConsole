@@ -26,7 +26,7 @@ from app.core.timeutil import end_of_day_ts, format_jalali_ts, utcnow
 from app.integrations.v2board import PanelUserNotFound
 from app.models import PanelOperation, Partner, Subscription, WalletLedger
 from app.services import consent
-from app.services.billing import Charge, D, dec_str, gb_to_bytes, qgb
+from app.services.billing import Charge, D, dec_str, gb_to_bytes, qgb, reset_cost_toman
 
 logger = logging.getLogger("partner.billing")
 
@@ -997,10 +997,12 @@ def _apply_create(db: Session, op: PanelOperation, gateway):
         data["panel_applied"] = True
         _write(db, op, data)
     sub = _ensure_local_sub(db, op, data)
-    op = db.get(PanelOperation, op.id)
-    op.subscription_id = sub.id
     data["subscription_id"] = sub.id
-    _write(db, op, data, status="completed")
+    _save_owned(db, op.id, {
+        "subscription_id": sub.id,
+        "payload": json.dumps(data, ensure_ascii=False),
+        "status": "completed",
+    })
     return {"sub": sub, "charge": _load_charge(data), "fetched": fetched}
 
 
@@ -1481,11 +1483,11 @@ def perform_decrease(
     v2_user_id = int(sub.v2_user_id)
     _domain, plan_id = subs.panel_identity(sub, sub.product)
     _release_lock(db)
-    used = None
+    used_bytes = None
     try:
         if needs_usage:
             info = _call_panel(gateway, "get_user_info", v2_user_id)
-            used = subs.used_gb_of(info)
+            used_bytes = subs.used_bytes_of(info)
         _call_panel(gateway, "get_plan", plan_id)
     except Exception as exc:
         _guard_pre_money(exc)
@@ -1493,10 +1495,11 @@ def perform_decrease(
     resumed = _resume_sub(db, sub.id, gateway, kind="decrease", traffic_cap_gb=traffic_cap_gb, end_date=end_date, bounds=True)
     if resumed is not None:
         return resumed["sub"], resumed["gb_back"], resumed["days_back"]
-    if traffic_cap_gb is not None and qgb(traffic_cap_gb) < qgb(sub.traffic_cap_gb) and used is None:
+    if traffic_cap_gb is not None and qgb(traffic_cap_gb) < qgb(sub.traffic_cap_gb) and used_bytes is None:
         info = _call_panel(gateway, "get_user_info", sub.v2_user_id)
-        used = subs.used_gb_of(info)
-    new_cap, new_exp, gb_back, days_back = subs._resolve_decrease(sub, traffic_cap_gb, end_date, now, used)
+        used_bytes = subs.used_bytes_of(info)
+    new_cap, new_exp, gb_back, days_back = subs._resolve_decrease(sub, traffic_cap_gb, end_date, now, used_bytes)
+    used = subs.bytes_to_gb(used_bytes) if used_bytes is not None else None
     old_cap = qgb(sub.traffic_cap_gb)
     old_exp = int(sub.expired_at)
     partner = subs.lock_partner_row(db, sub.partner_id)
@@ -1652,13 +1655,13 @@ def perform_reset(
         if _moment(sub.updated_at) != stamp:
             _release_lock(db)
             continue
-        raw_used = int(info.get("u") or 0) + int(info.get("d") or 0)
+        raw_used = subs.used_bytes_of(info)
         if raw_used <= 0:
             if db.info.get("financial_consent") is not None:
                 raise consent.conflict()
             raise AppError("مصرفی برای ریست وجود ندارد")
         used = subs.bytes_to_gb(raw_used)
-        cost = subs.floor_money(used, sub.product.price_per_gb)
+        cost = reset_cost_toman(raw_used, sub.product.price_per_gb)
         partner = subs.lock_partner_row(db, sub.partner_id)
         if cost > int(partner.balance_toman):
             raise AppError("موجودی تومان برای ریست ترافیک کافی نیست")

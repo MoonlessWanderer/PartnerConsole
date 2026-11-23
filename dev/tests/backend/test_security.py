@@ -33,7 +33,7 @@ from app.integrations.v2board import V2BoardClient
 from app.api import admin as admin_routes, partner as partner_routes
 from app.main import app, lifespan
 from app.models import AdminUser, LoginThrottle, Partner, RevokedToken, Subscription, WalletLedger
-from test_billing import seed
+from test_billing import PanelSim, gateway, seed
 from test_stage35 import setup
 
 PASSWORD = "Only-for-synthetic-test-872!"
@@ -140,6 +140,144 @@ def test_quote_enforces_subscription_ownership(security_api, action):
     assert response.status_code == 404
 
 
+def test_partner_subscription_reads_are_scoped_to_the_session_owner(security_api, monkeypatch):
+    client, sessions, ids = security_api
+    route = "/api/partner/subscriptions"
+    sim = PanelSim()
+    with sessions() as db:
+        first = db.get(Subscription, ids["own"])
+        extra = Subscription(
+            partner_id=ids["partner"], product_id=first.product_id, username="own_sub_extra",
+            v2_user_id=103, traffic_cap_gb=12, expired_at=first.expired_at,
+        )
+        db.add(extra)
+        db.flush()
+        owners = {
+            "A": ("shop1", ids["partner"], {first.id, extra.id}),
+            "B": ("other_shop", ids["other"], {ids["foreign"]}),
+        }
+        subscriptions = {}
+        for sub in (first, extra, db.get(Subscription, ids["foreign"])):
+            assert sub.product_id == first.product_id
+            sub.note = f"test-private-note-{sub.v2_user_id}"
+            link = f"https://panel.test/sub/fixture-{sub.v2_user_id}"
+            sim.users[sub.v2_user_id] = {
+                "id": sub.v2_user_id, "email": f"{sub.username}@{sub.product.email_domain}",
+                "u": 0, "d": 0, "subscribe_url": link,
+            }
+            subscriptions[sub.id] = (sub.v2_user_id, sub.username, sub.note, link)
+        assert len({item[3] for item in subscriptions.values()}) == 3
+        shared_panel_id = first.product.panel_id
+        db.commit()
+
+    opened_panels = []
+
+    def simulated_client(panel):
+        assert panel.id == shared_panel_id
+        opened_panels.append(panel.id)
+        return gateway(sim)
+
+    monkeypatch.setattr(partner_routes, "client_for_panel", simulated_client)
+    for label, (username, partner_id, owned_ids) in owners.items():
+        login = client.post("/api/partner/auth/login", json={"username": username, "password": PASSWORD})
+        assert login.status_code == 200
+        session = login.json()
+        assert session["role"] == "partner"
+        headers = {"Authorization": "Bearer " + session["access_token"]}
+        foreign_ids = subscriptions.keys() - owned_ids
+        foreign_links = [subscriptions[sub_id][3] for sub_id in foreign_ids]
+
+        full_list = client.get(route, headers=headers)
+        assert full_list.status_code == 200
+        assert all(link not in full_list.text for link in foreign_links)
+        result = full_list.json()
+        assert result["total"] == len(result["items"]) == len(owned_ids)
+        assert {row["id"] for row in result["items"]} == owned_ids
+        assert all(row["partner_id"] == partner_id for row in result["items"])
+
+        paged_ids = []
+        for offset in range(len(owned_ids) + 1):
+            page = client.get(route, headers=headers, params={"limit": 1, "offset": offset})
+            assert page.status_code == 200
+            assert all(link not in page.text for link in foreign_links)
+            result = page.json()
+            assert result["total"] == len(owned_ids)
+            assert len(result["items"]) == (1 if offset < len(owned_ids) else 0)
+            assert all(row["partner_id"] == partner_id for row in result["items"])
+            paged_ids.extend(row["id"] for row in result["items"])
+        assert len(paged_ids) == len(owned_ids) and set(paged_ids) == owned_ids
+
+        for sub_id in sorted(owned_ids):
+            response = client.get(f"{route}/{sub_id}", headers=headers)
+            assert response.status_code == 200
+            assert all(link not in response.text for link in foreign_links)
+            data = response.json()
+            assert (data["id"], data["partner_id"], data["product_id"]) == (sub_id, partner_id, first.product_id)
+            assert (data["v2_user_id"], data["username"], data["note"], data["subscribe_url"]) == subscriptions[sub_id]
+            assert data["live_error"] is None and data["subscribe_url_fallback"] is False
+
+        before_denials = len(opened_panels)
+        for sub_id in sorted(foreign_ids):
+            response = client.get(f"{route}/{sub_id}", headers=headers)
+            assert response.status_code == 404
+            assert response.json() == {"code": "request_rejected", "detail": "اشتراک پیدا نشد"}
+        assert len(opened_panels) == before_denials
+        print(f"{label}: list={len(owned_ids)}, page totals={len(owned_ids)}, "
+              f"own details={len(owned_ids)}, denied foreign details={len(foreign_ids)}")
+
+    assert opened_panels == [shared_panel_id] * 3
+
+
+@pytest.mark.parametrize(("role", "expected_status", "error_detail"), [
+    pytest.param("admin", 200, None, id="admin"),
+    pytest.param("partner", 401, "نشست نامعتبر است", id="partner_own_wallet"),
+    pytest.param(None, 401, "وارد نشده‌اید", id="no_session"),
+])
+def test_manual_wallet_adjustment_requires_an_admin(security_api, role, expected_status, error_detail):
+    client, sessions, ids = security_api
+    partner_id = ids["partner"]
+    headers = {}
+    if role is not None:
+        username = "admin" if role == "admin" else "shop1"
+        login = client.post(f"/api/{role}/auth/login", json={"username": username, "password": PASSWORD})
+        assert login.status_code == 200
+        session = login.json()
+        assert session["role"] == role
+        headers = {"Authorization": "Bearer " + session["access_token"]}
+        if role == "partner":
+            me = client.get("/api/partner/me", headers=headers)
+            assert me.status_code == 200 and me.json()["id"] == partner_id
+
+    def wallet_state():
+        with sessions() as db:
+            ledger = db.scalars(select(WalletLedger).where(
+                WalletLedger.partner_id == partner_id,
+            ).order_by(WalletLedger.id))
+            return db.get(Partner, partner_id).balance_toman, [
+                (row.id, row.asset, row.amount, row.product_id, row.subscription_id, row.reason,
+                 row.actor_type, row.actor_id) for row in ledger
+            ]
+
+    opening, old_ledger = wallet_state()
+    assert opening == ids["balance"]
+    amount = 1250
+    response = client.post(f"/api/admin/partners/{partner_id}/adjust", headers=headers,
+                           json={"asset": "toman", "amount": amount, "product_id": None})
+    closing, new_ledger = wallet_state()
+
+    assert response.status_code == expected_status
+    if role == "admin":
+        assert (response.json()["id"], response.json()["balance_toman"]) == (partner_id, opening + amount)
+        assert closing == opening + amount
+        assert new_ledger[:-1] == old_ledger
+        assert new_ledger[-1][1:] == ("toman", amount, None, None, "admin_adjust", "admin", ids["admin"])
+    else:
+        assert response.json() == {"code": "request_rejected", "detail": error_detail}
+        assert (closing, new_ledger) == (opening, old_ledger)
+    print(f"role={role or 'no_session'}, HTTP={response.status_code}, "
+          f"balance={opening}->{closing}, ledger delta={len(new_ledger) - len(old_ledger)}")
+
+
 def test_lists_and_ledger_ignore_forged_partner_filter(security_api):
     client, _, ids = security_api
     headers = bearer("partner", ids["partner"])
@@ -162,6 +300,58 @@ def test_logout_revokes_only_that_session_persistently(security_api, role):
     with sessions() as fresh:
         payload = decode_token(first["Authorization"][7:], role)
         assert fresh.get(RevokedToken, payload["jti"]) is not None
+
+
+def test_partner_session_logout_and_expiry(security_api, monkeypatch):
+    client, sessions, ids = security_api
+    route = "/api/partner/me"
+
+    def login():
+        response = client.post("/api/partner/auth/login", json={"username": "shop1", "password": PASSWORD})
+        assert response.status_code == 200
+        token = response.json()["access_token"]
+        return {"Authorization": f"Bearer {token}"}, decode_token(token, "partner")
+
+    def assert_allowed(headers):
+        response = client.get(route, headers=headers)
+        assert response.status_code == 200
+        assert response.json()["id"] == ids["partner"]
+
+    def assert_denied(headers):
+        response = client.get(route, headers=headers)
+        assert response.status_code == 401
+        assert response.json() == {"code": "request_rejected", "detail": "نشست نامعتبر است"}
+
+    headers_a, claims_a = login()
+    headers_b, claims_b = login()
+    assert claims_a["sub"] == claims_b["sub"] == str(ids["partner"])
+    assert claims_a["jti"] != claims_b["jti"]
+    assert_allowed(headers_a)
+    assert_allowed(headers_b)
+
+    logout = client.post("/api/partner/auth/logout", headers=headers_a)
+    assert logout.status_code == 200
+    assert logout.json() == {"ok": True}
+    assert_denied(headers_a)
+    assert_allowed(headers_b)
+    with sessions() as fresh:
+        assert fresh.get(RevokedToken, claims_a["jti"]).expires_at == claims_a["exp"]
+        assert fresh.get(RevokedToken, claims_b["jti"]) is None
+
+    expiry = datetime.fromtimestamp(claims_b["exp"], timezone.utc)
+    now = expiry - timedelta(seconds=1)
+
+    class VerificationClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now.astimezone(tz) if tz is not None else now.replace(tzinfo=None)
+
+    monkeypatch.setattr(jwt.api_jwt, "datetime", VerificationClock)
+    assert_allowed(headers_b)
+    now = expiry
+    assert_denied(headers_b)
+    now = expiry + timedelta(seconds=1)
+    assert_denied(headers_b)
 
 
 @pytest.mark.parametrize("kind", ["garbage", "wrong_signature", "expired", "missing_exp", "missing_jti", "wrong_role", "unknown_user"])

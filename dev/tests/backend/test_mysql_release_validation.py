@@ -10,15 +10,18 @@ test_stage6_http are replayed here against MySQL; panels are simulated locally.
 """
 import inspect as pyinspect
 import itertools
+import json
 import os
 import subprocess
 import sys
 import threading
 import time
-from datetime import date
+from concurrent.futures import ThreadPoolExecutor
+from datetime import date, timedelta
 from decimal import Decimal
 
 import httpx
+import jwt
 import pytest
 from alembic import command
 from alembic.autogenerate import compare_metadata
@@ -32,7 +35,8 @@ import test_stage35
 import test_stage6_http
 from app.core.config import settings
 from app.core.database import Base, make_engine
-from app.models import AdminUser, PanelOperation, Partner, PartnerProductCredit, Product, WalletLedger
+from app.core.timeutil import format_jalali_date, now_tehran
+from app.models import AdminUser, PanelOperation, Partner, PartnerProductCredit, Product, Subscription, WalletLedger
 from app.services import bootstrap, money_sync
 from app.services.money_sync import reconcile_pending
 from app.services.subscriptions import (
@@ -50,7 +54,7 @@ from test_billing import NOW, PanelSim, gateway, jalali, seed, sim  # noqa: F401
 from test_mysql_compatibility import migration_config
 from test_mysql_integration import isolated_mysql_url
 from test_stage35 import setup  # noqa: F401  (fixture)
-from test_stage6_http import ADMIN, PASSWORD, login
+from test_stage6_http import ADMIN, PASSWORD, deletion_panel, login  # noqa: F401  (deletion_panel is a fixture)
 
 HEAD = "0005_security_state"
 _serial = itertools.count(1)
@@ -442,6 +446,94 @@ def test_mysql_processes_neither_lose_updates_nor_overdraw(new_schema, engines):
         assert db.get(Partner, pid).balance_toman == 0
         rows = _toman_ledgers(db, pid, "admin_adjust")
         assert len(rows) == 11 and sum(Decimal(r.amount) for r in rows) == Decimal(8000 - 3000)
+
+
+def test_mysql_two_independent_purchase_confirmations_share_one_wallet(engines, tmp_path):
+    checkpoint = tmp_path / "confirmation-barrier"
+    with local_server(tmp_path, "stage6_panel_lab:concurrent_plan_app",
+                      env={"STAGE6_CHECKPOINT": str(checkpoint)}) as (panel_url, _):
+        env = test_stage6_http.api_env(tmp_path, panel_url)
+        with (local_server(tmp_path, "app.main:app", env=env) as (api_url, _),
+              httpx.Client(base_url=api_url, timeout=20, trust_env=False) as api,
+              httpx.Client(base_url=panel_url, trust_env=False) as panel):
+            _, partner, partner_id, product_id = test_stage6_http.prepare(api, panel_url)
+            initial = test_stage6_http.balance(api, partner)
+            assert initial == 100_000
+            assert test_stage6_http.payload(panel.get("/_lab/users"))["data"] == []
+            route = "/api/partner/subscriptions"
+            usernames = ("wallet_race_a", "wallet_race_b")
+            end_date = format_jalali_date(now_tehran().date() + timedelta(days=10))
+            purchases = {name: {"product_id": product_id, "username": name, "traffic_cap_gb": 59,
+                                "end_date": end_date} for name in usernames}
+            quotes = {name: test_stage6_http.payload(
+                api.post(route + "/quote", headers=partner, json={**body, "action": "create"}))
+                for name, body in purchases.items()}
+            # Read the synthetic claims for correlation. The real API verifies both tokens.
+            proofs = {name: jwt.decode(quote["consent_token"], options={"verify_signature": False})
+                      for name, quote in quotes.items()}
+            assert len({proof["ref"] for proof in proofs.values()}) == 2
+            assert all(proof["exp"] > time.time() for proof in proofs.values())
+            for quote in quotes.values():
+                assert quote["affordable"] and quote["balance_toman"] == initial
+                assert Decimal(quote["credit_gb"]) == quote["credit_days"] == 0
+                assert Decimal(quote["gb_from_credit"]) == quote["days_from_credit"] == 0
+                assert 0 < quote["toman"] <= initial
+            assert [quote["toman"] for quote in quotes.values()] == [60_000, 60_000]
+            assert sum(quote["toman"] for quote in quotes.values()) > initial
+
+            checkpoint.mkdir()
+
+            def confirm(name):
+                with httpx.Client(base_url=api_url, timeout=20, trust_env=False) as request:
+                    return request.post(route, headers=partner, json={
+                        **purchases[name], "consent_token": quotes[name]["consent_token"],
+                    })
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                results = dict(zip(usernames, pool.map(confirm, usernames)))
+            assert (checkpoint / "both-plan-reads").is_file(), "Confirmations did not overlap"
+            remote = {item["email"]: item for item in test_stage6_http.payload(panel.get("/_lab/users"))["data"]}
+
+    sessions = sessionmaker(bind=engines(env["DATABASE_URL"]))
+    with sessions() as db:
+        remaining = db.get(Partner, partner_id).balance_toman
+        operations = db.scalars(select(PanelOperation).where(PanelOperation.partner_id == partner_id)).all()
+        subs = db.scalars(select(Subscription).where(Subscription.partner_id == partner_id)).all()
+        ledger = db.scalars(select(WalletLedger).where(WalletLedger.partner_id == partner_id)).all()
+
+        statuses = {name: response.status_code for name, response in results.items()}
+        assert sorted(statuses.values()) == [200, 400], {name: result.text for name, result in results.items()}
+        winner = next(name for name in usernames if statuses[name] == 200)
+        loser = next(name for name in usernames if statuses[name] == 400)
+        assert results[loser].json() == {
+            "code": "request_rejected", "detail": "موجودی تومان یا اعتبار این محصول کافی نیست",
+        }
+        paid = quotes[winner]["toman"]
+        success = results[winner].json()
+        assert success["charge"]["toman"] == paid
+        assert len(operations) == len(subs) == len(remote) == 1
+        op, = operations
+        sub, = subs
+        upstream, = remote.values()
+        assert (op.username, op.kind, op.status, op.product_id) == (winner, "create", "completed", product_id)
+        recorded = json.loads(op.payload)
+        assert recorded["consent_ref"] == proofs[winner]["ref"]
+        assert (recorded["subscription_id"], recorded["v2_user_id"]) == (sub.id, sub.v2_user_id)
+        assert recorded["charge"]["toman"] == paid
+        assert sub.username == success["username"] == winner
+        assert (sub.id, sub.product_id, sub.v2_user_id) == (success["id"], product_id, upstream["id"])
+        assert upstream["email"] == f"{winner}@{sub.email_domain}"
+        assert sub.plan_id == upstream["plan_id"] == 7
+        assert not sub.banned and not sub.blocked_by_partner_ban and upstream["banned"] == 0
+        assert sub.expired_at == upstream["expired_at"] > time.time()
+        assert sorted((row.asset, row.reason, row.amount) for row in ledger) == [
+            ("toman", "admin_adjust", initial), ("toman", "create", -paid),
+        ]
+        assert remaining == initial - paid == sum(row.amount for row in ledger)
+        print(f"wallet race: initial={initial}, quote_a=60000, quote_b=60000, "
+              f"winner={winner}/200/{op.status}/debit={paid}/local={sub.id}/panel={upstream['id']}, "
+              f"loser={loser}/400/no-operation/no-debit/no-subscriptions, balance={remaining}, "
+              "both confirmations reached the pre-debit panel read")
 
 
 def test_mysql_lock_wait_timeout_moves_no_money(new_schema, engines):

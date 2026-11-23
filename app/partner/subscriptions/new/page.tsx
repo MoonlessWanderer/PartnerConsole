@@ -46,7 +46,11 @@ export default function NewSubscriptionPage() {
         reviewSession,
         body: { action: "create", product_id: productId, traffic_cap_gb: gb, end_date: end, username, note },
       }).then((data) => {
-        if (!cancelled) setQuote(data);
+        if (cancelled) return;
+        setProducts((items) => items.map((item) => item.id === productId
+          ? { ...item, credit_gb: data.credit_gb, credit_days: data.credit_days }
+          : item));
+        setQuote(data);
       }).catch((err) => {
         if (!cancelled) {
           setQuote(null);

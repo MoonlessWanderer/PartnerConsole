@@ -27,12 +27,12 @@ from app.services.billing import (
     D,
     bytes_to_gb,
     dec_str,
-    floor_money,
     gb_to_bytes,
     qgb,
     quote_charge,
     refund_decrease,
     refund_delete,
+    reset_cost_toman,
 )
 
 logger = logging.getLogger("partner.billing")
@@ -353,8 +353,12 @@ def build_update(
     return payload
 
 
+def used_bytes_of(info: dict) -> int:
+    return int(info.get("u") or 0) + int(info.get("d") or 0)
+
+
 def used_gb_of(info: dict) -> Decimal:
-    return bytes_to_gb(int(info.get("u") or 0) + int(info.get("d") or 0))
+    return bytes_to_gb(used_bytes_of(info))
 
 
 def _fetch_new_user(gateway, email: str) -> dict:
@@ -467,7 +471,9 @@ def increase_subscription(
     )
 
 
-def _resolve_decrease(sub: Subscription, traffic_cap_gb, end_date: str | None, now: datetime | None, used: Decimal | None):
+def _resolve_decrease(
+    sub: Subscription, traffic_cap_gb, end_date: str | None, now: datetime | None, used_bytes: int | None
+):
     current = now_tehran(now)
     now_ts = int(current.timestamp())
     old_cap = qgb(sub.traffic_cap_gb)
@@ -477,9 +483,9 @@ def _resolve_decrease(sub: Subscription, traffic_cap_gb, end_date: str | None, n
         if new_cap > old_cap:
             raise AppError("برای زیاد کردن حجم از افزایش استفاده کنید")
         if new_cap < old_cap:
-            if used is None:
+            if used_bytes is None:
                 raise AppError("مصرف فعلی از پنل خوانده نشد", 502)
-            if used > new_cap:
+            if used_bytes > gb_to_bytes(new_cap):
                 raise AppError("مصرف فعلی بیشتر از سقف جدید است")
     new_exp = int(sub.expired_at)
     if end_date:
@@ -771,15 +777,15 @@ def quote_operation(
                 need_gb, days, credit_gb, credit_days, product.price_per_gb, product.price_per_day
             )
         elif action == "decrease":
-            live_used = None
+            used_bytes = None
             if traffic_cap_gb is not None and qgb(traffic_cap_gb) < qgb(sub.traffic_cap_gb):
                 if gateway is None:
                     raise AppError("اتصال پنل برای خواندن مصرف لازم است", 502)
-                live_used = used_gb_of(gateway.get_user_info(sub.v2_user_id))
-                used = live_used
+                used_bytes = used_bytes_of(gateway.get_user_info(sub.v2_user_id))
+                used = bytes_to_gb(used_bytes)
             try:
                 _cap, _exp, gb_refund, days_refund = _resolve_decrease(
-                    sub, traffic_cap_gb, end_date, current, live_used
+                    sub, traffic_cap_gb, end_date, current, used_bytes
                 )
             except AppError as exc:
                 if exc.message == "مصرف فعلی بیشتر از سقف جدید است":
@@ -804,13 +810,13 @@ def quote_operation(
             if gateway is None:
                 raise AppError("اتصال پنل برای خواندن مصرف لازم است", 502)
             info = gateway.get_user_info(sub.v2_user_id)
-            raw_used = int(info.get("u") or 0) + int(info.get("d") or 0)
+            raw_used = used_bytes_of(info)
             used = bytes_to_gb(raw_used)
             if raw_used <= 0:
                 message = "مصرفی برای ریست وجود ندارد"
                 cost = 0
             else:
-                cost = floor_money(used, product.price_per_gb)
+                cost = reset_cost_toman(raw_used, product.price_per_gb)
             charge = quote_charge(used or 0, 0, 0, 0, product.price_per_gb, product.price_per_day)
             charge = type(charge)(
                 need_gb=qgb(used or 0),
