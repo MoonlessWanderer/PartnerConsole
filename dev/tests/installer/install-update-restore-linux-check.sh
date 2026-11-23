@@ -52,7 +52,7 @@ if [[ "$new_commit" != "$source_commit" ]]; then
   [[ "$(origin_git rev-parse "$new_commit^")" == "$source_commit" &&
      "$(origin_git diff --name-only "$source_commit" "$new_commit")" == partnerconsole.sh ]] ||
     fail "private candidate differs from the checkout"
-  cmp -s <(sed '/^RELEASE_TREE_SHA256=/d' "$repo/partnerconsole.sh") \\
+  cmp -s <(sed '/^RELEASE_TREE_SHA256=/d' "$repo/partnerconsole.sh") \
     <(sed '/^RELEASE_TREE_SHA256=/d' "$work/target.sh") || fail "private installer differs beyond its tree pin"
 fi
 printf 'testing %s at %s (checkout %s)\n' "$new_tag" "$new_commit" "$source_commit"

@@ -47,7 +47,7 @@ if ! ssh_listener_snapshot >/dev/null 2>&1; then
   if ! ssh_listener_snapshot >/dev/null 2>&1; then
     install -d -m 755 /run/sshd
     ssh-keygen -q -t ed25519 -N '' -f "$work/ssh-host-key"
-    /usr/sbin/sshd -D -e -f /dev/null -h "$work/ssh-host-key" \\
+    /usr/sbin/sshd -D -e -f /dev/null -h "$work/ssh-host-key" \
       -o ListenAddress=127.0.0.1:24867 -o PermitRootLogin=no -o PasswordAuthentication=no &
     ssh_listener=$!
     for _ in $(seq 1 20); do
