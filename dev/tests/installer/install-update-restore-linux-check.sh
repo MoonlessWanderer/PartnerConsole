@@ -282,7 +282,7 @@ else
   runuser -u "$browser_user" -- openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=localhost \
     -addext subjectAltName=DNS:localhost -keyout "$work/browser/key.pem" -out "$work/browser/cert.pem" >"$work/tls.log" 2>&1
   runuser -u "$browser_user" -- env PATH="$PATH" HOME="$browser_home" PLAYWRIGHT_MODULE="$PLAYWRIGHT_MODULE" \
-    PC_FIXTURE_ADMIN="$fixture_admin" PC_FIXTURE_PASSWORD="$fixture_password" \
+    PC_FIXTURE_BASELINE="$baseline_tag" PC_FIXTURE_ADMIN="$fixture_admin" PC_FIXTURE_PASSWORD="$fixture_password" \
     node "$repo/dev/tests/installer/financial-upgrade-browser.cjs" "$browser" "$work/browser" "$origin" >"$work/browser.log" 2>&1 &
   probe_pid=$!
   wait_for_browser ready
