@@ -15,12 +15,12 @@ The application uses Next.js 15, React 19, TypeScript, FastAPI, Python, SQLAlche
 
 ## Installation
 
-The application and installer are both **v1.0.5**. Download the installer and checksum file from the [v1.0.5 Release](https://github.com/MoonlessWanderer/PartnerConsole/releases/tag/v1.0.5).
+The application and installer are both **v1.0.6**. Download the installer and checksum file from the [v1.0.6 Release](https://github.com/MoonlessWanderer/PartnerConsole/releases/tag/v1.0.6).
 
 ```bash
 work_dir="$(mktemp -d)"
 cd "$work_dir"
-release_url=https://github.com/MoonlessWanderer/PartnerConsole/releases/download/v1.0.5
+release_url=https://github.com/MoonlessWanderer/PartnerConsole/releases/download/v1.0.6
 curl -fsSLO "$release_url/partnerconsole.sh"
 curl -fsSLO "$release_url/SHA256SUMS"
 sha256sum --check --strict SHA256SUMS
@@ -45,7 +45,7 @@ Use an SSH tunnel to reach the local web and API ports before configuring a publ
 
 ## Installer commands
 
-These commands describe Installer `v1.0.5`.
+These commands describe Installer `v1.0.6`.
 
 | Command | Action |
 | --- | --- |
@@ -74,7 +74,7 @@ Download the installer and checksum for the **target** release into a new direct
 ```bash
 work_dir="$(mktemp -d)"
 cd "$work_dir"
-release_url=https://github.com/MoonlessWanderer/PartnerConsole/releases/download/v1.0.5
+release_url=https://github.com/MoonlessWanderer/PartnerConsole/releases/download/v1.0.6
 curl -fsSLO "$release_url/partnerconsole.sh"
 curl -fsSLO "$release_url/SHA256SUMS"
 sha256sum --check --strict SHA256SUMS
@@ -176,4 +176,4 @@ Backend and frontend tests live under `dev/tests/`. The simulated V2Board panel 
 
 ## Release notes
 
-See the [Installer v1.0.5 release notes](dev/docs/releases/v1.0.5/RELEASE_NOTES.md) for financial fixes, upgrade instructions, and known limitations.
+See the [Installer v1.0.6 release notes](dev/docs/releases/v1.0.6/RELEASE_NOTES.md) for financial fixes, upgrade instructions, and known limitations.

@@ -233,6 +233,10 @@ mysql_guard_preserves_ssh "$guard" || fail "the MySQL guard can change SSH or fl
 if grep -q 'systemctl enable nftables' "$repo/partnerconsole.sh" || grep -q 'partnerconsole-mysql-guard.service' "$repo/partnerconsole.sh"; then
   fail "the MySQL network guard is installed as a boot service"
 fi
+printf 'tcp dport 24867 drop\n' >> "$guard"
+if mysql_guard_preserves_ssh "$guard"; then
+  fail "the MySQL guard accepted a rule affecting the fixture SSH port"
+fi
 ok "mysql guard keeps ssh"
 
 (
@@ -423,7 +427,7 @@ pp_test_curl() {
     printf '200'
     return 0
   fi
-  printf '%s' '<html>ورود<script src="/_next/static/chunks/app.js"></script></html>' > "$out"
+  printf '%s' '<html>ÙˆØ±ÙˆØ¯<script src="/_next/static/chunks/app.js"></script></html>' > "$out"
   printf '200'
 }
 (

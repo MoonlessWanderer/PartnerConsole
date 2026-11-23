@@ -1,4 +1,4 @@
-# نصب دستی Partner Console 1.0.5
+# نصب دستی Partner Console 1.0.6
 
 برای نصب یا ارتقای مدیریت‌شده در Ubuntu 24.04، نصاب و checksum نسخهٔ هدف را طبق [راهنمای README](../../../README.md#installation) دریافت و بررسی کنید.
 
