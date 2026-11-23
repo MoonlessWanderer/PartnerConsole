@@ -14,12 +14,13 @@ const api = "http://127.0.0.1:8741";
 const panel = "http://127.0.0.1:18788";
 const password = crypto.randomBytes(24).toString("base64url");
 const route = "/api/partner/subscriptions";
+const signedBaseline = process.env.PC_FIXTURE_BASELINE === "v1.0.4";
 const purchasePage = "/partner/subscriptions/new";
 const button = (page, name) => page.getByRole("button", { name, exact: true });
 
-async function json(base, endpoint, { body, token } = {}) {
+async function json(base, endpoint, { body, token, method = body === undefined ? "GET" : "POST" } = {}) {
   const res = await fetch(base + endpoint, {
-    method: body === undefined ? "GET" : "POST",
+    method,
     headers: { ...(token && { Authorization: `Bearer ${token}` }), ...(body && { "Content-Type": "application/json" }) },
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(10000),
@@ -64,7 +65,7 @@ async function verify() {
   const fixturePanel = await admin("panels", {
     name: "Upgrade fixture", base_url: panel, secure_path: "labsecure", admin_email: "admin@panel.test", admin_password: "secret",
   });
-  await admin("products", {
+  const { product } = await admin("products", {
     panel_id: fixturePanel.id, plan_id: 7, name: "Upgrade plan", email_domain: "upgrade.example.test",
     price_per_gb: 1000, price_per_day: 100,
   });
@@ -125,7 +126,11 @@ async function verify() {
     const submitReset = () => post(reset, resetRoute, () => button(dialog, "تأیید").click());
     const oldReset = await review(reset, reset, "ریست ترافیک");
     const oldPurchase = await reviewPurchase(purchase, "fixture_after_update");
-    assert.ok(!oldReset.consent_token && !oldPurchase.consent_token);
+    if (signedBaseline) {
+      assert.ok(oldReset.consent_token && oldPurchase.consent_token);
+    } else {
+      assert.ok(!oldReset.consent_token && !oldPurchase.consent_token);
+    }
 
     fs.writeFileSync(path.join(work, "ready"), "");
     for (let attempt = 0; !fs.existsSync(path.join(work, "updated")); attempt++) {
@@ -133,6 +138,13 @@ async function verify() {
       await sleep(1000);
     }
     assert.ok((await adminLogin()).access_token, "installed administrator credentials did not survive Update");
+    if (signedBaseline) {
+      // v1.0.4 already signs quotes. Change the rate so both old quotes are stale.
+      await json(api, "/api/admin/products/" + product.id, {
+        token: adminToken, method: "PUT",
+        body: { name: product.name, email_domain: product.email_domain, price_per_gb: 1100, price_per_day: 100, active: true },
+      });
+    }
     const before = await snapshot();
     for (const submitOld of [submit, submitReset]) {
       const response = await submitOld();
@@ -157,7 +169,7 @@ async function verify() {
     await reset.reload();
     const newReset = await review(reset, reset, "ریست ترافیک");
     assert.ok(newReset.consent_token);
-    assert.equal(newReset.toman, 1000);
+    assert.equal(newReset.toman, signedBaseline ? 1100 : 1000);
     assert.equal((await submitReset()).status(), 200);
     const settled = await snapshot();
     assert.equal(purchased.wallet - settled.wallet, newReset.toman);
