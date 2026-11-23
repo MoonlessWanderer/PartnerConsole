@@ -427,7 +427,7 @@ pp_test_curl() {
     printf '200'
     return 0
   fi
-  printf '%s' '<html>ÙˆØ±ÙˆØ¯<script src="/_next/static/chunks/app.js"></script></html>' > "$out"
+  printf '%s' '<html>ورود<script src="/_next/static/chunks/app.js"></script></html>' > "$out"
   printf '200'
 }
 (

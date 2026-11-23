@@ -6,7 +6,7 @@ umask 077
 
 RELEASE_TAG="v1.0.6"
 APP_VERSION="${RELEASE_TAG#v}"
-RELEASE_TREE_SHA256="1a3a86aedd94f02581d4f2c07c4baf0ded3202f671d0de4202b844808c3accc5"
+RELEASE_TREE_SHA256="9167f7afe89bd2082b0daaabb1042c215886f8ec6d3c1122ad1be9e6d42a1d44"
 OFFICIAL_REPO="https://github.com/MoonlessWanderer/PartnerConsole.git"
 APP_USER="ppv1"
 DB_NAME="partnerconsole"

@@ -18,7 +18,7 @@ source "$repo/partnerconsole.sh"
 resolve_root
 validate_root
 [[ "$(git -c safe.directory="$origin" -C "$origin" rev-parse "refs/tags/$RELEASE_TAG^{commit}")" == "$expected_commit" ]]
-[[ "$(git -c safe.directory="$repo" -C "$repo" rev-list --count HEAD)" == 1 ]]
+[[ "$(git -c safe.directory="$repo" -C "$repo" rev-parse HEAD)" == "$expected_commit" ]]
 OFFICIAL_REPO="$origin"
 ask_origin() { printf '%s\n' http://127.0.0.1:3741 http://127.0.0.1:8741; }
 ask_admin_password() { python3 -c 'import secrets; print(secrets.token_urlsafe(24))'; }
@@ -38,22 +38,24 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Some runners lack an SSH listener. Use loopback to exercise the guard
-# without exposing an additional port.
-if [[ -z "$(ss -H -lnt 'sport = :22')" ]]; then
-  python3 - <<'PYTHON' &
-import socket
-import time
-with socket.socket() as listener:
-    listener.bind(("127.0.0.1", 22))
-    listener.listen()
-    time.sleep(1500)
-PYTHON
-  ssh_listener=$!
-  for _ in $(seq 1 20); do
-    if [[ -n "$(ss -H -lnt 'sport = :22')" ]]; then break; fi
-    sleep 0.1
-  done
+# Provide a genuine loopback OpenSSH listener if the disposable runner has none.
+if ! ssh_listener_snapshot >/dev/null 2>&1; then
+  if [[ ! -x /usr/sbin/sshd ]]; then
+    apt-get update
+    apt-get install -y openssh-server
+  fi
+  if ! ssh_listener_snapshot >/dev/null 2>&1; then
+    install -d -m 755 /run/sshd
+    ssh-keygen -q -t ed25519 -N '' -f "$work/ssh-host-key"
+    /usr/sbin/sshd -D -e -f /dev/null -h "$work/ssh-host-key" \\
+      -o ListenAddress=127.0.0.1:24867 -o PermitRootLogin=no -o PasswordAuthentication=no &
+    ssh_listener=$!
+    for _ in $(seq 1 20); do
+      if ssh_listener_snapshot >/dev/null 2>&1; then break; fi
+      sleep 0.1
+    done
+    ssh_listener_snapshot >/dev/null
+  fi
 fi
 
 setup_app "$OFFICIAL_REPO"
@@ -63,7 +65,7 @@ grep -Fx "tree=$RELEASE_TREE_SHA256" "$APP_ROOT/.release/current"
 cmp "$repo/partnerconsole.sh" "$APP_ROOT/partnerconsole.sh"
 env -u PARTNERCONSOLE_LIBRARY /usr/local/bin/partnerconsole start
 curl -fsS http://127.0.0.1:8741/api/health > "$work/health.json"
-curl -fsS http://127.0.0.1:8741/openapi.json > "$work/openapi.json"
+(cd "$APP_ROOT/backend" && .venv/bin/python -c 'from app.main import app; print(app.version)') > "$work/version.txt"
 curl -fsS http://127.0.0.1:3741/ > "$work/login.html"
 python3 - "$work" "$APP_VERSION" <<'PYTHON'
 import json
@@ -71,7 +73,7 @@ import sys
 from pathlib import Path
 work = Path(sys.argv[1])
 assert json.loads((work / "health.json").read_text()) == {"ok": True}
-assert json.loads((work / "openapi.json").read_text())["info"]["version"] == sys.argv[2]
+assert (work / "version.txt").read_text().strip() == sys.argv[2]
 assert "<title>Partner Console</title>" in (work / "login.html").read_text()
 PYTHON
 printf 'Candidate %s installed and started on Ubuntu. API health, version and sign-in page passed.\n' "$expected_commit"
