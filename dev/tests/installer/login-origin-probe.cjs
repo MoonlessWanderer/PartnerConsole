@@ -112,7 +112,8 @@ async function main() {
     input.write(JSON.stringify({ id, method, params, ...(session && { sessionId: session }) }) + "\0");
   });
   try {
-    const version = await send("Browser.getVersion", {}, undefined, 20000);
+    // Allow for a cold Chrome start on a shared CI runner.
+    const version = await send("Browser.getVersion", {}, undefined, 60_000);
     readyMs = Math.round(performance.now() - started);
     console.error(`login origin probe: ${version.product}, DevTools pipe ready in ${readyMs} ms`);
     const { targetId } = await send("Target.createTarget", { url: "about:blank" });
