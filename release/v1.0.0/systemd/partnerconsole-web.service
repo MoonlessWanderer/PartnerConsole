@@ -1,0 +1,34 @@
+# Rendered by scripts/render-host-templates.sh. Not installed by that command.
+# ProtectHome is off so the chosen install folder may be inside a home directory.
+
+[Unit]
+Description=Partner Console web
+After=network-online.target partnerconsole-api.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@SERVICE_USER@
+Group=@SERVICE_USER@
+WorkingDirectory=@ROOT@
+Environment=NODE_ENV=production
+Environment=TMPDIR=@ROOT@/runtime/tmp
+Environment=TMP=@ROOT@/runtime/tmp
+Environment=TEMP=@ROOT@/runtime/tmp
+Environment=XDG_CACHE_HOME=@ROOT@/runtime/cache/xdg
+Environment=NPM_CONFIG_CACHE=@ROOT@/runtime/cache/npm
+Environment=NEXT_TELEMETRY_DISABLED=1
+ExecStart=@ROOT@/node_modules/.bin/next start -H 127.0.0.1 -p 3741
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=false
+ProtectSystem=strict
+ProtectHome=false
+ReadWritePaths=@ROOT@/logs @ROOT@/runtime @ROOT@/.next
+UMask=0077
+StandardOutput=append:@ROOT@/logs/web.log
+StandardError=append:@ROOT@/logs/web.log
+
+[Install]
+WantedBy=multi-user.target

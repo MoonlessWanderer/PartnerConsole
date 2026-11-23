@@ -1,0 +1,236 @@
+name: Installer Linux validation
+
+on:
+  push:
+    branches: [main, 'release-validation/**']
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rc7-linux-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  installer:
+    name: Bash, ShellCheck and installer checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Bash syntax and ShellCheck
+        run: |
+          shellcheck --version
+          files=(partnerconsole.sh install.sh start.sh stop.sh restart.sh status.sh scripts/*.sh dev/tests/installer/*.sh)
+          for file in "${files[@]}"; do bash -n "$file"; done
+          shellcheck -x -S warning "${files[@]}"
+      - name: Verify checkout and installer pin
+        run: |
+          test -z "$(git status --porcelain)"
+          PARTNERCONSOLE_LIBRARY=1 source ./partnerconsole.sh
+          if git show-ref --verify --quiet "refs/tags/$RELEASE_TAG" &&
+             [[ "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" == "$(git rev-parse HEAD)" ]]; then
+            test "$(tree_sha256 "$GITHUB_WORKSPACE")" = "$RELEASE_TREE_SHA256"
+          fi
+          sha256sum partnerconsole.sh
+      - name: Installer checks
+        run: |
+          for check in release-check features-check domain-launcher-check domain-rollback-check domain-acme-check domain-build-env-check; do
+            echo "::group::$check"
+            bash "dev/tests/installer/$check.sh"
+            echo "::endgroup::"
+          done
+
+  service-identity:
+    name: Linux service identity as root and ppv1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Service identity with the RC5 baseline
+        run: |
+          sudo useradd --system --home-dir /nonexistent --shell /usr/sbin/nologin ppv1
+          fixtures="$GITHUB_WORKSPACE/dev/tests/fixtures/upgrade"
+          (cd "$fixtures" && sha256sum --check --strict SHA256SUMS)
+          tar -xOf "$fixtures/v1.0.3-rc.5.tar.gz" partnerconsole.sh > "$RUNNER_TEMP/rc5-partnerconsole.sh"
+          tar -xOf "$fixtures/v1.0.3-rc.5.tar.gz" scripts/common.sh > "$RUNNER_TEMP/rc5-common.sh"
+          sudo bash dev/tests/installer/service-identity-linux-check.sh "$RUNNER_TEMP/rc5-partnerconsole.sh" "$RUNNER_TEMP/rc5-common.sh"
+
+  nginx-acme:
+    name: Real Nginx ACME webroot and rollback (${{ matrix.run }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        run: [1]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Nginx ACME checks with the RC4 baseline
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y nginx
+          sudo systemctl stop nginx
+          tar -xOf "$GITHUB_WORKSPACE/dev/tests/fixtures/upgrade/v1.0.3-rc.4.tar.gz" scripts/domain.sh > "$RUNNER_TEMP/rc4-domain.sh"
+          (cd "$GITHUB_WORKSPACE/dev/tests/fixtures/upgrade" && sha256sum --check --strict SHA256SUMS)
+          {
+            nginx -v
+            sudo bash dev/tests/installer/domain-acme-linux-check.sh "$RUNNER_TEMP/rc4-domain.sh"
+          } 2>&1 | tee "$RUNNER_TEMP/nginx-acme.log"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: nginx-acme-${{ matrix.run }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/nginx-acme.log
+
+  nextjs:
+    name: Real Next.js builds and browser sign-in origin (${{ matrix.run }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        run: [1]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+      - name: Build environment checks
+        run: bash dev/tests/installer/domain-build-env-check.sh
+      - name: RC7 real builds and headless browser
+        run: |
+          {
+            google-chrome --version
+            node --version
+            bash dev/tests/installer/domain-build-next-check.sh
+          } 2>&1 | tee "$RUNNER_TEMP/nextjs-browser.log"
+      - name: RC6 fails the same check
+        run: |
+          (cd "$GITHUB_WORKSPACE/dev/tests/fixtures/upgrade" && sha256sum --check --strict SHA256SUMS)
+          tar -xOf "$GITHUB_WORKSPACE/dev/tests/fixtures/upgrade/v1.0.3-rc.6.tar.gz" scripts/domain.sh > "$RUNNER_TEMP/rc6-domain.sh"
+          if bash dev/tests/installer/domain-build-next-check.sh "$RUNNER_TEMP/rc6-domain.sh" 2>&1 | tee "$RUNNER_TEMP/rc6.log"; then
+            echo "RC6 passed a check it must fail" >&2
+            exit 1
+          fi
+          grep -F 'administrator sign-in used http://127.0.0.1:8741/api/admin/auth/login' "$RUNNER_TEMP/rc6.log"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: nextjs-browser-${{ matrix.run }}-attempt-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/nextjs-browser.log
+            ${{ runner.temp }}/rc6.log
+
+  application:
+    name: Backend and frontend tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+      - name: Backend pytest
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e "./backend[dev]"
+          cd backend
+          DATABASE_URL=sqlite:// python -m pytest -q
+      - name: Frontend tests and TypeScript
+        run: |
+          npm ci --no-audit --no-fund
+          npm run test:frontend
+          npm run typecheck
+
+  credentials:
+    name: Credentials launcher, Linux PTY and MySQL 8.4
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Start disposable MySQL 8.4 on loopback
+        run: |
+          sudo systemctl stop mysql
+          docker run --detach --name pc-credentials-db --publish 127.0.0.1:3306:3306 \
+            -e MYSQL_ROOT_PASSWORD=fixture-root-password -e MYSQL_ROOT_HOST=% \
+            -e MYSQL_DATABASE=partnerconsole -e MYSQL_USER=partnerconsole \
+            -e MYSQL_PASSWORD=fixture-application-password mysql:8.4
+          for attempt in {1..60}; do
+            if docker exec pc-credentials-db mysql --protocol=tcp -h 127.0.0.1 \
+                -u partnerconsole -pfixture-application-password partnerconsole \
+                -e 'SELECT 1' >/dev/null 2>&1; then exit 0; fi
+            sleep 2
+          done
+          exit 1
+      - name: Reproduce the Credentials defect from the official RC7 tag
+        run: |
+          mkdir "$RUNNER_TEMP/credentials-rc7"
+          fixtures="$GITHUB_WORKSPACE/dev/tests/fixtures/upgrade"
+          (cd "$fixtures" && sha256sum --check --strict SHA256SUMS)
+          tar -xzf "$fixtures/v1.0.3-rc.7.tar.gz" -C "$RUNNER_TEMP/credentials-rc7"
+          sudo PARTNERCONSOLE_DISPOSABLE_HOST=1 bash dev/tests/installer/credentials-linux-check.sh "$RUNNER_TEMP/credentials-rc7" baseline
+      - name: Exercise Credentials against real MySQL through the installed launcher
+        run: sudo PARTNERCONSOLE_DISPOSABLE_HOST=1 bash dev/tests/installer/credentials-linux-check.sh "$GITHUB_WORKSPACE" fixed
+
+  install-update-restore:
+    name: Install, Update and Full Restore from ${{ matrix.baseline }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        baseline: [v1.0.3, v1.0.3-rc.7, v1.0.3-rc.6]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Remove the runner's MySQL and add build packages
+        run: |
+          sudo systemctl stop mysql || true
+          dpkg-query -W -f '${Package}\n' 'mysql-*' 2>/dev/null | xargs -r sudo apt-get purge -y
+          sudo rm -rf /etc/mysql /var/lib/mysql /var/log/mysql
+          sudo apt-get update
+          sudo apt-get install -y python3-venv build-essential pkg-config xz-utils iproute2
+      - name: Local copy of the release tag
+        run: |
+          tag="$(sed -n 's/^RELEASE_TAG="\(.*\)"$/\1/p' partnerconsole.sh)"
+          sudo git -c safe.directory="$GITHUB_WORKSPACE" clone --quiet --bare --no-local --no-tags "$GITHUB_WORKSPACE" /srv/pc-release-origin.git
+          sudo git -C /srv/pc-release-origin.git tag "$tag" "$GITHUB_SHA"
+      - name: Install the pinned browser driver
+        if: matrix.baseline != 'v1.0.3-rc.6'
+        run: npm install --prefix "$RUNNER_TEMP/upgrade-browser" --no-save --package-lock=false --no-audit --no-fund playwright-core@1.56.1
+      - name: Install, Update, Backup and Restore
+        env:
+          INSTALL_BASELINE: ${{ matrix.baseline }}
+        run: |
+          sudo PARTNERCONSOLE_DISPOSABLE_HOST=1 RELEASE_ORIGIN=/srv/pc-release-origin.git BROWSER_USER="$(id -un)" \
+            INSTALL_BASELINE="$INSTALL_BASELINE" PLAYWRIGHT_MODULE="$RUNNER_TEMP/upgrade-browser/node_modules/playwright-core" \
+            bash dev/tests/installer/install-update-restore-linux-check.sh

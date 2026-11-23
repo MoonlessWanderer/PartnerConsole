@@ -1,0 +1,36 @@
+name: Candidate fresh Ubuntu install
+
+on:
+  push:
+    branches: ['release-validation/**']
+
+permissions:
+  contents: read
+
+jobs:
+  install:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Prepare disposable candidate origin
+        shell: bash
+        run: |
+          test "$(git rev-list --count HEAD)" = 1
+          origin="$RUNNER_TEMP/fresh-candidate.git"
+          git clone --quiet --bare --no-local --no-tags "$GITHUB_WORKSPACE" "$origin"
+          git -C "$origin" tag v1.0.4 "$GITHUB_SHA"
+      - name: Remove the disposable runner's existing MySQL packages
+        shell: bash
+        run: |
+          sudo systemctl stop mysql || true
+          { dpkg-query -W -f '${Package}\n' 'mysql-*' || true; } | xargs -r sudo apt-get purge -y
+          sudo rm -rf /etc/mysql /var/lib/mysql /var/log/mysql
+      - name: Install and start the sealed candidate
+        shell: bash
+        run: |
+          sudo PARTNERCONSOLE_DISPOSABLE_HOST=1 bash dev/tests/installer/fresh-install-linux-check.sh \
+            "$RUNNER_TEMP/fresh-candidate.git" "$GITHUB_SHA"

@@ -1,0 +1,39 @@
+# Rendered by scripts/render-host-templates.sh into release/v1.0.0/generated/.
+# That command does not install this unit. Copying it to the host is a separate
+# operator action. PrivateTmp is off so temporary files stay in this install.
+# ProtectHome is off so the install folder may live inside a home directory.
+
+[Unit]
+Description=Partner Console API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@SERVICE_USER@
+Group=@SERVICE_USER@
+WorkingDirectory=@ROOT@
+EnvironmentFile=@ROOT@/config/api.env
+Environment=TMPDIR=@ROOT@/runtime/tmp
+Environment=TMP=@ROOT@/runtime/tmp
+Environment=TEMP=@ROOT@/runtime/tmp
+Environment=XDG_CACHE_HOME=@ROOT@/runtime/cache/xdg
+Environment=XDG_CONFIG_HOME=@ROOT@/config
+Environment=PIP_CACHE_DIR=@ROOT@/runtime/cache/pip
+Environment=NPM_CONFIG_CACHE=@ROOT@/runtime/cache/npm
+Environment=PYTHONPYCACHEPREFIX=@ROOT@/runtime/cache/pyc
+Environment=NEXT_TELEMETRY_DISABLED=1
+ExecStart=@ROOT@/backend/.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8741 --workers 2 --lifespan on --proxy-headers --forwarded-allow-ips 127.0.0.1
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=false
+ProtectSystem=strict
+ProtectHome=false
+ReadWritePaths=@ROOT@/data @ROOT@/logs @ROOT@/runtime @ROOT@/backups @ROOT@/config
+UMask=0077
+StandardOutput=append:@ROOT@/logs/api.log
+StandardError=append:@ROOT@/logs/api.log
+
+[Install]
+WantedBy=multi-user.target

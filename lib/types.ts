@@ -1,0 +1,62 @@
+export type Quote = {
+  consent_token?: string;
+  action: string;
+  affordable: boolean;
+  shortage_toman: number;
+  message: string | null;
+  base_jalali: string;
+  end_jalali: string | null;
+  need_gb: string;
+  need_days: number;
+  gb_from_credit: string;
+  days_from_credit: number;
+  gb_paid: string;
+  days_paid: number;
+  toman: number;
+  gb_refund: string;
+  days_refund: number;
+  used_gb: string | null;
+  balance_toman: number;
+  credit_gb: string;
+  credit_days: number;
+  price_per_gb: number;
+  price_per_day: number;
+  product_name: string;
+};
+
+export type Product = {
+  id: number;
+  panel_id: number;
+  panel_name?: string | null;
+  plan_id: number;
+  name: string;
+  email_domain: string;
+  price_per_gb: number;
+  price_per_day: number;
+  active: boolean;
+  credit_gb?: string;
+  credit_days?: number;
+};
+
+export type SubscriptionRow = {
+  id: number;
+  partner_username?: string | null;
+  product_name?: string | null;
+  panel_name?: string | null;
+  username: string;
+  v2_user_id: number;
+  note?: string | null;
+  traffic_cap_gb: string;
+  expired_jalali: string;
+  days_left: number;
+  status: string;
+  banned: boolean;
+  blocked_by_partner_ban: boolean;
+  used_gb?: string | null;
+  upload_gb?: string | null;
+  download_gb?: string | null;
+  subscribe_url?: string | null;
+  subscribe_url_fallback?: boolean;
+  live_error?: string | null;
+  balance_toman?: number;
+};
