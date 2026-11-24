@@ -221,7 +221,7 @@ Development defaults to SQLite at `backend/data/partner.db`. MySQL tests require
 - V2Board remains the source for subscription URLs, usage, and subscriber email. The application tracks the stable `v2_user_id`.
 - Dates use the Persian calendar and the `Asia/Tehran` time zone.
 
-See the [application contract](dev/docs/guides/START.md) for the complete rules.
+See the [application contract](dev/docs/guides/application-contract.md) for the complete rules.
 
 ## Testing
 
