@@ -1,4 +1,4 @@
-# START — پنل همکاری (یک فایل برای ایجنت)
+# مشخصات پنل همکاری (یک فایل برای ایجنت)
 
 کاربر گفته **شروع کن**. این تنها فایل دستور کار توست. طبق همین سند بساز.
 
@@ -33,7 +33,7 @@
 ```
 backend/app/{main.py,core,models,schemas,api,services,integrations}
 backend/alembic/
-dev/docs/guides/START.md
+dev/docs/guides/application-contract.md
 ```
 فرانت: ریپو الان Next در **ریشه** دارد (با `/design`). همان را به پنل همکاری تبدیل کن؛ مجبور نیستی پوشه `frontend/` جدا بسازی.
 

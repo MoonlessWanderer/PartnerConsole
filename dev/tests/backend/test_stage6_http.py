@@ -1206,7 +1206,7 @@ def test_http_volume_increase_spends_product_credit_before_wallet(tmp_path, lab_
     old_cap, new_cap, used = 10, 15, 2
     initial_credit_gb, initial_credit_days = 3, 6
     gb_rate = 1000
-    # START.md charges only the added volume, using the subscription's product credit first.
+    # application-contract.md charges only the added volume, using the subscription's product credit first.
     added_gb = new_cap - old_cap
     paid_gb = added_gb - initial_credit_gb
     expected_toman = paid_gb * gb_rate
