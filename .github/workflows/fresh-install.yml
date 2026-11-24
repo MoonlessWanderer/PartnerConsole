@@ -28,13 +28,16 @@ jobs:
           persist-credentials: false
       - name: Build, audit and checksum the application package
         env:
-          RELEASE_VERSION: ${{ inputs.version || 'v1.0.9' }}
+          RELEASE_VERSION: ${{ inputs.version }}
           RELEASE_COMMIT: ${{ inputs.commit }}
         run: |
-          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]] &&
-             [[ "$GITHUB_REF" != refs/heads/main || "$RELEASE_COMMIT" != "$GITHUB_SHA" ]]; then
-            echo "::error::Manual release validation requires main and the full SHA selected for this run."
-            exit 1
+          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
+            if [[ "$GITHUB_REF" != refs/heads/main || "$RELEASE_COMMIT" != "$GITHUB_SHA" || -z "$RELEASE_VERSION" ]]; then
+              echo "::error::Manual release validation requires main, the full SHA selected for this run, and an explicit version."
+              exit 1
+            fi
+          else
+            RELEASE_VERSION=v1.0.9
           fi
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           python3 dev/release/build.py "$GITHUB_SHA" "$RELEASE_VERSION" "$RUNNER_TEMP/assets"
