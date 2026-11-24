@@ -380,11 +380,14 @@ def adjust_partner(
         product_id=body.product_id,
         actor=_admin_actor(admin),
     )
-    return {
+    result = {
         "id": partner.id,
         "balance_toman": int(partner.balance_toman),
         "credits": _partner_credits(db, partner),
     }
+    # Commit the credit and its ledger entry before acknowledging the adjustment.
+    db.commit()
+    return result
 
 
 @router.post("/partners/{partner_id}/ban")
