@@ -32,16 +32,23 @@ async function json(base, endpoint, { body, token, method = body === undefined ?
 async function reviewPurchase(page, username) {
   await page.goto(origin + purchasePage);
   await page.getByLabel("محصول", { exact: true }).locator("option").first().waitFor({ state: "attached" });
-  await page.getByLabel("نام کاربری (a-z، عدد، _)", { exact: true }).fill(username);
+  await page.getByRole("textbox", { name: /^نام کاربری(?: \(a-z، عدد، _\))?$/u }).fill(username);
   await page.getByLabel("حجم (گیگ)", { exact: true }).fill("2");
-  return review(page, page, "+۳۱ روز");
+  return review(page, page, /^\+?۳۱ روز$/u);
 }
 
 async function review(page, scope, label) {
   const response = await post(page, route + "/quote", () => button(scope, label).click());
   assert.equal(response.status(), 200);
-  await page.getByText(/^مبلغ:/).waitFor();
-  return response.json();
+  const quote = await response.json();
+  const amount = page.getByText(/^مبلغ:/).or(
+    page.locator("dt").filter({ hasText: /^برداشت از کیف پول$/ }).locator("xpath=../dd"),
+  );
+  await amount.waitFor();
+  const shown = (await amount.innerText()).trim().replace(/^مبلغ:\s*/u, "").replace(/[,٬]/gu, "");
+  const expected = new Intl.NumberFormat("fa-IR", { useGrouping: false }).format(quote.toman);
+  assert.equal(shown, expected + " تومان", "visible amount differs from the quote");
+  return quote;
 }
 
 async function post(page, endpoint, action) {
