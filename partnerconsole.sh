@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Installer v1.0.6 for Partner Console 1.0.6.
+# Installer v1.0.7 for Partner Console 1.0.7.
 # The app runs as ppv1. Root never executes a file ppv1 can write.
 set -euo pipefail
 umask 077
 
-RELEASE_TAG="v1.0.6"
+RELEASE_TAG="v1.0.7"
 APP_VERSION="${RELEASE_TAG#v}"
-RELEASE_TREE_SHA256="ac15b7e3cb07241c9411cad0ec59db0d3444c8346ff15d99b0e7db7409730fc0"
+RELEASE_TREE_SHA256="a04c9a61e962edb8c5db1be3fd9645e50fb7f24f1d7f5f57fdf69a942c3d9d02"
 OFFICIAL_REPO="https://github.com/MoonlessWanderer/PartnerConsole.git"
 APP_USER="ppv1"
 DB_NAME="partnerconsole"
@@ -1164,6 +1164,9 @@ update_app() {
     return 0
   fi
   reject_local_changes "$(current_commit || true)" "$commit"
+  if [[ -f "$APP_ROOT/.release/current" ]] && grep -Fxq "tag=$RELEASE_TAG" "$APP_ROOT/.release/current"; then
+    die "Release $RELEASE_TAG is already installed, but its saved identity differs. Refusing to reinstall the same version."
+  fi
   ensure_user
   install_deps
   deploy_fetched "$commit"
@@ -1173,6 +1176,93 @@ update_app() {
   fi
   log "Update finished on tag ${RELEASE_TAG}. Configuration and database data were kept."
 }
+
+installed_release_tag() {
+  local marker="$APP_ROOT/.release/current" tag
+  assert_root_file "$marker"
+  tag="$(sed -n 's/^tag=//p' "$marker")"
+  [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "The installed release marker has no valid version."
+  printf '%s\n' "$tag"
+}
+
+apply_pinned_update() (
+  local update_lock installed
+  exec {update_lock}< "$APP_ROOT" || die "Cannot open the install directory."
+  flock -n "$update_lock" || die "Another Update is running for this installation."
+  if [[ -f "$APP_ROOT/.release/current" ]]; then
+    installed="$(installed_release_tag)" || return 1
+    if dpkg --compare-versions "${RELEASE_TAG#v}" lt "${installed#v}"; then
+      die "Release $installed is already installed. Refusing to downgrade to $RELEASE_TAG."
+    fi
+  fi
+  # Keep the lock in this process only. Restarted services must not inherit it.
+  ( update_app ) {update_lock}<&-
+)
+
+update_command() (
+  [[ -f "$APP_ROOT/config/api.env" ]] || die "Install Partner Console before updating it."
+  if [[ ! "${BASH_SOURCE[0]}" -ef "$APP_ROOT/partnerconsole.sh" ]]; then
+    # A separately downloaded installer is an explicit choice of target release.
+    apply_pinned_update
+    return
+  fi
+
+  local work metadata tag digest installed
+  local -a download=(curl --disable --fail --silent --show-error --location
+    --proto '=https' --proto-redir '=https' --connect-timeout 10 --max-time 60 --retry 2)
+  assert_root_file "$APP_ROOT/.release"
+  installed="$(installed_release_tag)" || return 1
+  work="$(mktemp -d -- "$APP_ROOT/.release/update.XXXXXXXX")" || die "Could not create a private Update directory."
+  trap 'rm -rf -- "$work"' EXIT
+  "${download[@]}" -o "$work/release.json" \
+    'https://api.github.com/repos/MoonlessWanderer/PartnerConsole/releases/latest' ||
+    die "Could not retrieve the latest Partner Console release from GitHub."
+  metadata="$(pp_python - "$work/release.json" <<'PY'
+import json, re, sys
+from pathlib import Path
+
+try:
+    release = json.loads(Path(sys.argv[1]).read_bytes())
+except (OSError, ValueError):
+    sys.exit("Invalid GitHub release metadata.")
+if not isinstance(release, dict):
+    sys.exit("Invalid GitHub release metadata.")
+tag = release.get("tag_name", "")
+if (release.get("draft") is not False or release.get("prerelease") is not False
+        or not isinstance(tag, str)
+        or not re.fullmatch(r"v(?:0|[1-9][0-9]*)(?:\.(?:0|[1-9][0-9]*)){2}", tag)):
+    sys.exit("Expected a published, stable Partner Console version.")
+assets = release.get("assets")
+if not isinstance(assets, list):
+    sys.exit("The release must contain one uploaded partnerconsole.sh asset.")
+assets = [a for a in assets if isinstance(a, dict) and a.get("name") == "partnerconsole.sh"]
+if len(assets) != 1 or assets[0].get("state") != "uploaded":
+    sys.exit("The release must contain one uploaded partnerconsole.sh asset.")
+digest = assets[0].get("digest") or ""
+if not isinstance(digest, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+    sys.exit("GitHub did not provide a SHA256 digest for the installer.")
+print(tag, digest.removeprefix("sha256:"))
+PY
+  )" || die "Invalid GitHub release metadata. Update stopped."
+  read -r tag digest <<< "$metadata"
+  if dpkg --compare-versions "${tag#v}" lt "${installed#v}"; then
+    die "GitHub lists $tag as latest. Refusing to downgrade from $installed."
+  fi
+  if [[ "$tag" == "$installed" ]]; then
+    [[ "$RELEASE_TAG" == "$installed" ]] || die "The installed launcher and release marker disagree. Update stopped."
+    apply_pinned_update
+    return
+  fi
+  log "Updating Partner Console from $installed to $tag."
+  "${download[@]}" -o "$work/partnerconsole.sh" \
+    "${OFFICIAL_REPO%.git}/releases/download/$tag/partnerconsole.sh" ||
+    die "Could not download the $tag installer."
+  verify_sha256 "$work/partnerconsole.sh" "$digest" || die "Installer checksum mismatch for $tag."
+  [[ "$(sed -n '/^RELEASE_TAG=/p' "$work/partnerconsole.sh")" == "RELEASE_TAG=\"$tag\"" ]] ||
+    die "Installer tag mismatch for $tag."
+  PARTNERCONSOLE_ROOT="$APP_ROOT" /usr/bin/bash "$work/partnerconsole.sh" update
+)
+
 
 # 0 = running, 1 = stopped, 2 = unsafe or indeterminate.
 app_running() (
@@ -1314,7 +1404,7 @@ run_choice() {
     start) start_app ;;
     stop) stop_app ;;
     restart) restart_app ;;
-    update) update_app ;;
+    update) update_command ;;
     status) status_app ;;
     logs) logs_app ;;
     backup) backup_app ;;
@@ -1345,7 +1435,15 @@ menu_loop() {
       2) (set -e; run_choice start) || log "Failed." ;;
       3) (set -e; run_choice stop) || log "Failed." ;;
       4) (set -e; run_choice restart) || log "Failed." ;;
-      5) (set -e; run_choice update) || log "Failed." ;;
+      5)
+        if PARTNERCONSOLE_ROOT="$APP_ROOT" /usr/bin/bash "${BASH_SOURCE[0]}" update; then
+          if [[ "${BASH_SOURCE[0]}" -ef "$APP_ROOT/partnerconsole.sh" ]]; then
+            exec /usr/bin/bash "$APP_ROOT/partnerconsole.sh" menu
+          fi
+        else
+          log "Failed."
+        fi
+        ;;
       6) (set -e; run_choice status) || log "Failed." ;;
       7) (set -e; run_choice logs) || log "Failed." ;;
       8) (set -e; backup_menu) || log "Failed." ;;
