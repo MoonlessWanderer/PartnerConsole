@@ -1,23 +1,34 @@
 "use client";
 
-import { Quote } from "@/lib/types";
+import type { ReactNode } from "react";
+import { Facts } from "@/components/Design";
+import { Banner } from "@/components/ui";
+import type { Quote } from "@/lib/types";
 import { formatDate, formatDays, formatGb, formatToman } from "@/lib/format";
 
 export function QuoteBox({ quote }: { quote: Quote | null }) {
-  if (!quote) return <div className="text-sm text-slate-500">خلاصه هزینه پس از انتخاب حجم و تاریخ می‌آید.</div>;
+  if (!quote) return <p className="pc-quiet" role="status">خلاصهٔ هزینه پس از دریافت پیش‌فاکتور نمایش داده می‌شود.</p>;
+
+  const rows: [string, ReactNode][] = [
+    ["مبدأ", <bdi dir="ltr">{formatDate(quote.base_jalali)}</bdi>],
+    ["پایان", <bdi dir="ltr">{formatDate(quote.end_jalali)}</bdi>],
+    ["حجم و مدت لازم", <>{formatGb(quote.need_gb)} و {formatDays(quote.need_days)}</>],
+    ["سهم اعتبار", <>{formatGb(quote.gb_from_credit)} و {formatDays(quote.days_from_credit)}</>],
+    ["سهم کیف پول", <>{formatGb(quote.gb_paid)} و {formatDays(quote.days_paid)}</>],
+  ];
+  if (Number(quote.gb_refund) > 0 || quote.days_refund > 0) {
+    rows.push(["برگشت به اعتبار", <>{formatGb(quote.gb_refund)} و {formatDays(quote.days_refund)}</>]);
+  }
+  if (quote.used_gb) rows.push(["مصرف فعلی", formatGb(quote.used_gb)]);
+
   return (
-    <div className="space-y-1 text-sm leading-7">
-      <div>مبدأ: {formatDate(quote.base_jalali)} · پایان: {formatDate(quote.end_jalali)}</div>
-      <div>حجم لازم: {formatGb(quote.need_gb)} · روز لازم: {formatDays(quote.need_days)}</div>
-      <div>از اعتبار: {formatGb(quote.gb_from_credit)} و {formatDays(quote.days_from_credit)}</div>
-      <div>خرید نقدی: {formatGb(quote.gb_paid)} و {formatDays(quote.days_paid)}</div>
-      <div className="font-bold">مبلغ: {formatToman(quote.toman)}</div>
-      {Number(quote.gb_refund) > 0 || quote.days_refund > 0 ? (
-        <div>برگشت به اعتبار: {formatGb(quote.gb_refund)} و {formatDays(quote.days_refund)}</div>
-      ) : null}
-      {quote.used_gb ? <div>مصرف فعلی: {formatGb(quote.used_gb)}</div> : null}
-      {quote.message ? <div className="text-red-700">{quote.message}</div> : null}
-      {!quote.affordable && !quote.message ? <div className="text-red-700">کسری: {formatToman(quote.shortage_toman)}</div> : null}
+    <div className="space-y-3 text-sm">
+      <Facts rows={rows}/>
+      <div className="pc-quote-total">
+        <Facts rows={[["برداشت از کیف پول", formatToman(quote.toman)]]}/>
+      </div>
+      {quote.message ? <Banner>{quote.message}</Banner> :
+        !quote.affordable && <Banner>کسری موجودی: {formatToman(quote.shortage_toman)}</Banner>}
     </div>
   );
 }

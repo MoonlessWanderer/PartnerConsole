@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useParams } from "next/navigation";
 import { api } from "@/lib/api";
 import { faDigits, formatGb, formatInt, formatToman } from "@/lib/format";
 import {
@@ -23,8 +24,8 @@ import {
   shownError,
   statusTone,
 } from "@/lib/attention";
-import { Badge, Banner, Button, Field, TableWrap, inputClass } from "@/components/ui";
-import { Modal } from "@/components/Modal";
+import { Badge, Banner, Button, Field, inputClass } from "@/components/ui";
+import { ActionLink, Facts, PageHead, ResponsiveTable } from "@/components/Design";
 
 const FILTERS: { value: OperationStatus | ""; label: string }[] = [
   { value: "attention", label: "نیازمند بررسی" },
@@ -87,7 +88,12 @@ function Amounts({ op }: { op: Operation }) {
   );
 }
 
+const root = "/admin/operations";
+
 export default function AdminOperations() {
+  const {id}=useParams<{id?:string}>();
+  const [resolving,setResolving]=useState(false);
+  const [loaded,setLoaded]=useState(false);
   const [filter, setFilter] = useState<OperationStatus | "">("attention");
   const [items, setItems] = useState<Operation[]>([]);
   const [error, setError] = useState("");
@@ -98,14 +104,25 @@ export default function AdminOperations() {
   const [submitting, setSubmitting] = useState(false);
   const inFlight = useRef(false);
 
-  async function load(status = filter) {
-    const query = status ? `?status=${status}` : "";
-    const data = await api<{ items: Operation[] }>(`/admin/operations${query}`);
-    setItems(data.items);
-  }
   useEffect(() => {
-    load(filter).catch((err) => setError(err.message));
-  }, [filter]);
+    const value=new URLSearchParams(window.location.search).get("status");
+    const requested=FILTERS.find(item=>item.value===value)?.value;
+    if(requested!==undefined) setFilter(requested);
+    setLoaded(true);
+  },[]);
+  useEffect(() => {
+    if(!loaded || id) return;
+    let active=true;
+    setError("");
+    api<{items:Operation[]}>(root + (filter ? "?status="+filter : "")).then(data=>{
+      if(active) setItems(data.items);
+    }).catch(err=>{if(active)setError(err.message);});
+    return()=>{active=false;};
+  }, [filter,id,loaded]);
+  useEffect(()=>{
+    if(id && /^\d+$/.test(id)) open(Number(id));
+    else if(id) setError("شناسهٔ عملیات معتبر نیست.");
+  },[id]);
 
   async function open(id: number) {
     setError("");
@@ -117,13 +134,6 @@ export default function AdminOperations() {
     } catch (err) {
       setError(err instanceof Error ? err.message : "خواندن عملیات ناموفق بود");
     }
-  }
-
-  function close() {
-    if (inFlight.current) return;
-    setCurrent(null);
-    setConfirming(false);
-    setError("");
   }
 
   async function submit() {
@@ -143,9 +153,10 @@ export default function AdminOperations() {
         body: resolveBody(current, form),
       });
       setNotice(`عملیات #${faDigits(result.id)}: ${OPERATION_STATUS_LABEL[result.status] || result.status}`);
-      setCurrent(null);
       setConfirming(false);
-      await load();
+      setResolving(false);
+      try { setCurrent(await api<OperationDetail>(root + "/" + result.id)); }
+      catch { setError("تصمیم ثبت شد، اما بارگیری وضعیت تازه ممکن نشد."); }
     } catch (err) {
       const message = err instanceof Error ? err.message : "ثبت تصمیم ناموفق بود";
       setConfirming(false);
@@ -163,106 +174,86 @@ export default function AdminOperations() {
   const problem = current ? formProblem(current, form) : null;
   const chosen = current && form.decision ? explain(current, form.decision) : null;
 
-  return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap gap-2" role="group" aria-label="فیلتر وضعیت">
-        {FILTERS.map((item) => (
-          <Button key={item.value || "all"} tone={filter === item.value ? "primary" : "ghost"} onClick={() => setFilter(item.value)}>
-            {item.label}
-          </Button>
-        ))}
-      </div>
-      {error && !current ? <Banner>{error}</Banner> : null}
-      {notice ? <Banner tone="ok">{notice}</Banner> : null}
-      <TableWrap>
-        <table>
-          <thead>
-            <tr><th>شماره</th><th>نوع</th><th>کاربر</th><th>وضعیت</th><th>مبلغ</th><th>آخرین خطا</th><th>به‌روزرسانی</th><th></th></tr>
-          </thead>
-          <tbody>
-            {items.map((row) => (
-              <tr key={row.id}>
-                <td>{faDigits(row.id)}</td>
-                <td>{KIND_LABEL[row.kind] || row.kind}</td>
-                <td>{row.username || "—"}</td>
-                <td><Badge tone={statusTone(row.status)}>{OPERATION_STATUS_LABEL[row.status] || row.status}</Badge></td>
-                <td>{row.charge_toman ? formatToman(row.charge_toman) : "—"}</td>
-                <td className="max-w-xs truncate" title={shownError(row.last_error) || ""}>{shownError(row.last_error) || "—"}</td>
-                <td>{moment(row.updated_at)}</td>
-                <td><Button tone="ghost" onClick={() => open(row.id)}>جزئیات</Button></td>
-              </tr>
-            ))}
-            {items.length === 0 ? <tr><td colSpan={8}>عملیاتی نیست.</td></tr> : null}
-          </tbody>
-        </table>
-      </TableWrap>
-      {current ? (
-        <Modal title={`عملیات #${faDigits(current.id)}`} error={error} onClose={close}>
-          <div className="space-y-2 text-sm leading-7">
-            <div><Badge tone={statusTone(current.status)}>{OPERATION_STATUS_LABEL[current.status] || current.status}</Badge></div>
-            <Amounts op={current} />
-            <PanelStateView op={current} />
-            {current.busy ? <Banner tone="warn">این عملیات همین حالا در حال پردازش است؛ کمی بعد دوباره باز کنید.</Banner> : null}
-            {!confirming && current.status === "attention" ? blocked.map((item) => (
-              <Banner key={item.decision} tone="warn">«{decisionLabel(current, item.decision)}» ممکن نیست: {item.reason}</Banner>
-            )) : null}
-            {options.length && !confirming ? (
-              <form className="space-y-3 border-t border-slate-200 pt-3" onSubmit={(e) => { e.preventDefault(); if (!problem) setConfirming(true); }}>
-                <Field label="تصمیم">
-                  <div className="flex flex-wrap gap-2">
-                    {options.map((decision: Decision) => (
-                      <Button key={decision} tone={form.decision === decision ? (decision === "retry" ? "primary" : "danger") : "ghost"}
-                        onClick={() => setForm({ ...form, decision, acceptShortfall: false, checkedPanel: false })}>
-                        {decisionLabel(current, decision)}
-                      </Button>
-                    ))}
-                  </div>
-                </Field>
-                {chosen ? (
-                  <>
-                    <div>{chosen.summary}</div>
-                    <EffectsView op={current} decision={form.decision as Decision} />
-                    <Banner tone="warn">{chosen.warning}</Banner>
-                  </>
-                ) : null}
-                <Field label="توضیح تصمیم (الزامی)">
-                  <textarea className={`${inputClass} min-h-24 py-2`} maxLength={NOTE_MAX} value={form.note}
-                    onChange={(e) => setForm({ ...form, note: e.target.value })} />
-                </Field>
-                {form.decision === "close" && hasShortfall(current) ? (
-                  <label className="flex items-start gap-2">
-                    <input type="checkbox" className="mt-1.5" checked={form.acceptShortfall}
-                      onChange={(e) => setForm({ ...form, acceptShortfall: e.target.checked })} />
-                    <span>اختلاف {formatGb(current.shortfall_gb)} و {formatInt(current.shortfall_days)} روز را می‌پذیرم؛ این مقدار دیگر پس گرفته نمی‌شود.</span>
-                  </label>
-                ) : null}
-                <label className="flex items-start gap-2">
-                  <input type="checkbox" className="mt-1.5" checked={form.checkedPanel}
-                    onChange={(e) => setForm({ ...form, checkedPanel: e.target.checked })} />
-                  <span>وضعیت پنل را بررسی کردم و پیامد این تصمیم را می‌دانم.</span>
-                </label>
-                {problem && form.decision ? <div className="text-slate-500">{problem}</div> : null}
-                <Button type="submit" disabled={Boolean(problem)}>ادامه</Button>
-              </form>
-            ) : null}
-            {confirming && chosen ? (
-              <div className="space-y-3 border-t border-slate-200 pt-3">
-                <div className="font-bold">تأیید نهایی: {decisionLabel(current, form.decision as Decision)}</div>
-                <div>{chosen.summary}</div>
-                <EffectsView op={current} decision={form.decision as Decision} />
-                <Banner tone="warn">{chosen.warning}</Banner>
-                <div className="break-words">توضیح: {form.note.trim()}</div>
-                <div className="flex gap-2">
-                  <Button tone={form.decision === "close" ? "danger" : "primary"} disabled={submitting} onClick={submit}>
-                    {submitting ? "در حال ثبت…" : "تأیید و ثبت"}
-                  </Button>
-                  <Button tone="ghost" disabled={submitting} onClick={() => setConfirming(false)}>بازگشت</Button>
-                </div>
-              </div>
-            ) : null}
-          </div>
-        </Modal>
-      ) : null}
+  const listHref=root+"?"+new URLSearchParams({status:filter});
+  const confirmation=confirming&&chosen&&current&&form.decision;
+
+  if(!id) return <div className="space-y-4">
+    <PageHead title="عملیات ناتمام" description="پیگیری وضعیت و تصمیم‌های بازیابی" />
+    <div className="pc-tabs" role="group" aria-label="فیلتر وضعیت">
+      {FILTERS.map(item=><button type="button" key={item.value||"all"} aria-pressed={filter===item.value}
+        onClick={()=>{const url=new URL(window.location.href);url.searchParams.set("status",item.value);window.history.replaceState(null,"",url);setFilter(item.value);}}>{item.label}</button>)}
     </div>
-  );
+    {error ? <Banner>{error}</Banner> :
+      <ResponsiveTable label="عملیات" icon="clock" columns={["شماره","نوع","کاربر","وضعیت","مبلغ","آخرین خطا","به‌روزرسانی","جزئیات"]}
+        empty="عملیاتی با این وضعیت پیدا نشد." rows={items.map(row=>{
+          const kind=KIND_LABEL[row.kind]||row.kind;
+          const status=<Badge tone={statusTone(row.status)}>{OPERATION_STATUS_LABEL[row.status]||row.status}</Badge>;
+          const user=<bdi dir="ltr">{row.username||"—"}</bdi>;
+          const action=<ActionLink href={root+"/"+row.id+"?"+new URLSearchParams({status:filter})} secondary>جزئیات</ActionLink>;
+          return {id:row.id,cells:[faDigits(row.id),kind,user,status,row.charge_toman?formatToman(row.charge_toman):"—",shownError(row.last_error)||"—",moment(row.updated_at),action],
+            title:kind+" #"+faDigits(row.id),summary:<>{user} · {moment(row.updated_at)}</>,aside:status,action};
+        })}/>}
+  </div>;
+
+  return <div className="space-y-4">
+    <PageHead title={confirmation?"تأیید نهایی عملیات":resolving?"رسیدگی به عملیات":"عملیات #"+faDigits(id)}
+      back={{href:listHref,label:"عملیات ناتمام"}}/>
+    {error && <Banner>{error}</Banner>}
+    {notice && <Banner tone="ok">{notice}</Banner>}
+    {!current ? !error&&<p role="status" className="pc-card">در حال بارگیری عملیات…</p> : confirmation ? (
+      <section className="pc-card pc-form-card mx-auto max-w-2xl">
+        <h2 className="pc-section-title">{decisionLabel(current, form.decision as Decision)}</h2>
+        <Banner tone="warn">{chosen.warning}</Banner>
+        <Facts rows={[["شماره عملیات",faDigits(current.id)],["توضیح",form.note.trim()]]}/>
+        <p className="text-sm">{chosen.summary}</p>
+        <EffectsView op={current} decision={form.decision as Decision}/>
+        <div className="flex flex-wrap gap-2">
+          <Button tone={form.decision==="close"?"danger":"primary"} disabled={submitting} onClick={submit}>{submitting?"در حال ثبت…":"تأیید و ثبت"}</Button>
+          <Button tone="ghost" disabled={submitting} onClick={()=>setConfirming(false)}>بازگشت</Button>
+        </div>
+      </section>
+    ) : resolving&&options.length ? (
+      <div className="pc-grid-two">
+        <form className="pc-card pc-form-card" onSubmit={e=>{e.preventDefault();if(!problem)setConfirming(true);}}>
+          <h2 className="pc-section-title">تصمیم عملیات</h2>
+          <Field label="تصمیم">
+            <select className={inputClass} value={form.decision||""} onChange={e=>setForm({...form,decision:(e.target.value||null) as Decision|null,acceptShortfall:false,checkedPanel:false})} required>
+              <option value="">انتخاب تصمیم</option>{options.map(option=><option key={option} value={option}>{decisionLabel(current,option)}</option>)}
+            </select>
+          </Field>
+          <Field label="توضیح تصمیم (الزامی)">
+            <textarea className={inputClass+" min-h-24"} maxLength={NOTE_MAX} value={form.note} onChange={e=>setForm({...form,note:e.target.value})}/>
+          </Field>
+          {form.decision==="close"&&hasShortfall(current)&&<label className="flex items-start gap-2 text-sm">
+            <input type="checkbox" className="mt-1" checked={form.acceptShortfall} onChange={e=>setForm({...form,acceptShortfall:e.target.checked})}/>
+            <span>اختلاف {formatGb(current.shortfall_gb)} و {formatInt(current.shortfall_days)} روز را می‌پذیرم؛ این مقدار دیگر پس گرفته نمی‌شود.</span>
+          </label>}
+          <label className="flex items-start gap-2 text-sm">
+            <input type="checkbox" className="mt-1" checked={form.checkedPanel} onChange={e=>setForm({...form,checkedPanel:e.target.checked})}/>
+            <span>وضعیت پنل را بررسی کردم و پیامد این تصمیم را می‌دانم.</span>
+          </label>
+          {problem&&form.decision&&<p className="pc-quiet">{problem}</p>}
+          <div className="flex gap-2"><Button type="submit" disabled={Boolean(problem)}>ادامه</Button><Button tone="ghost" onClick={()=>setResolving(false)}>انصراف</Button></div>
+        </form>
+        <section className="pc-card pc-form-card">
+          <h2 className="pc-section-title">پیامدهای تصمیم</h2>
+          {chosen ? <><p className="text-sm">{chosen.summary}</p><EffectsView op={current} decision={form.decision as Decision}/><Banner tone="warn">{chosen.warning}</Banner></> :
+            <p className="pc-quiet">برای دیدن اثر این تصمیم بر کیف پول، اعتبار و پنل، یک گزینه انتخاب کنید.</p>}
+        </section>
+      </div>
+    ) : <>
+      <Badge tone={statusTone(current.status)}>{OPERATION_STATUS_LABEL[current.status]||current.status}</Badge>
+      <div className="pc-grid-two">
+        <section className="pc-card space-y-2 text-sm"><h2 className="pc-section-title">خلاصه عملیات</h2><Amounts op={current}/></section>
+        <section className="pc-card space-y-2 text-sm"><h2 className="pc-section-title">وضعیت فعلی پنل</h2><PanelStateView op={current}/></section>
+      </div>
+      <section className="pc-card space-y-2">
+        <h2 className="pc-section-title">رسیدگی</h2>
+        {current.busy&&<Banner tone="warn">این عملیات همین حالا در حال پردازش است؛ کمی بعد دوباره باز کنید.</Banner>}
+        {current.status==="attention"&&blocked.map(item=><Banner tone="warn" key={item.decision}>«{decisionLabel(current,item.decision)}» ممکن نیست: {item.reason}</Banner>)}
+        {options.length>0&&<Button tone="ghost" onClick={()=>setResolving(true)}>بررسی و تصمیم</Button>}
+        {!options.length&&!current.busy&&current.status!=="attention"&&<p className="pc-quiet">در این وضعیت تصمیم دیگری قابل ثبت نیست.</p>}
+      </section>
+    </>}
+  </div>;
 }

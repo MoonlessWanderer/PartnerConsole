@@ -1,11 +1,12 @@
 "use client";
 
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
+import { usePathname, useRouter } from "next/navigation";
 import { api } from "@/lib/api";
 import { formatToman } from "@/lib/format";
 import { Product } from "@/lib/types";
-import { Banner, Button, Field, TableWrap, inputClass } from "@/components/ui";
-import { Modal } from "@/components/Modal";
+import { Badge, Banner, Button, Field, inputClass } from "@/components/ui";
+import { ActionLink, Facts, PageHead, ResponsiveTable } from "@/components/Design";
 
 type Panel = { id: number; name: string };
 type Plan = { id: number; name: string; reset_traffic_method: number | null; warnings: string[]; device_limit: number | null; speed_limit: number | null };
@@ -16,7 +17,13 @@ export default function ProductsPage() {
   const [plans, setPlans] = useState<Plan[]>([]);
   const [error, setError] = useState("");
   const [warnings, setWarnings] = useState<string[]>([]);
-  const [open, setOpen] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const router = useRouter();
+  const open = usePathname() === "/admin/products/new";
+  const inFlight = useRef(false);
+  const planRequest = useRef(0);
+  const [saving, setSaving] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [form, setForm] = useState({ panel_id: 0, plan_id: 0, name: "", email_domain: "", price_per_gb: 0, price_per_day: 0, active: true });
 
   async function load() {
@@ -28,31 +35,38 @@ export default function ProductsPage() {
     setPanels(panelRows.items);
   }
   useEffect(() => {
-    load().catch((err) => setError(err.message));
+    load().catch((err) => setError(err.message)).finally(() => setLoading(false));
   }, []);
 
   async function loadPlans(panelId: number) {
     setPlans([]);
     setWarnings([]);
+    const version = ++planRequest.current;
     if (!panelId) return;
     try {
       const data = await api<{ items: Plan[] }>(`/admin/panels/${panelId}/plans`);
-      setPlans(data.items);
+      if (version === planRequest.current) setPlans(data.items);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "خواندن پلن ناموفق بود");
+      if (version === planRequest.current) setError(err instanceof Error ? err.message : "خواندن پلن ناموفق بود");
     }
   }
 
   async function save(event: FormEvent) {
     event.preventDefault();
+    if (inFlight.current || !form.panel_id || !form.plan_id) return;
+    inFlight.current = true;
+    setSaving(true);
     setError("");
     try {
       const data = await api<{ warnings: string[] }>("/admin/products", { method: "POST", body: form });
       setWarnings(data.warnings || []);
-      setOpen(false);
-      await load();
+      if (!data.warnings?.length) router.push("/admin/products");
+      else setSaved(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "خطا");
+    } finally {
+      inFlight.current = false;
+      setSaving(false);
     }
   }
 
@@ -75,41 +89,14 @@ export default function ProductsPage() {
     }
   }
 
-  return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h2 className="text-lg font-bold">محصولات</h2>
-        <Button onClick={() => { setOpen(true); setWarnings([]); }}>محصول جدید</Button>
-      </div>
-      {error && !open ? <Banner>{error}</Banner> : null}
-      {warnings.map((item) => <Banner key={item} tone="warn">{item}</Banner>)}
-      <TableWrap>
-        <table>
-          <thead>
-            <tr>
-              <th>نام</th><th>پنل</th><th>پلن</th><th>دامنه</th><th>هر گیگ</th><th>هر روز</th><th>وضعیت</th><th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {items.map((product) => (
-              <tr key={product.id}>
-                <td>{product.name}</td>
-                <td>{product.panel_name}</td>
-                <td>{product.plan_id}</td>
-                <td>{product.email_domain}</td>
-                <td>{formatToman(product.price_per_gb)}</td>
-                <td>{formatToman(product.price_per_day)}</td>
-                <td>{product.active ? "روشن" : "خاموش"}</td>
-                <td><Button tone="ghost" onClick={() => toggle(product)}>{product.active ? "خاموش کردن" : "روشن کردن"}</Button></td>
-              </tr>
-            ))}
-            {items.length === 0 ? <tr><td colSpan={8}>محصولی نیست.</td></tr> : null}
-          </tbody>
-        </table>
-      </TableWrap>
-      {open ? (
-        <Modal title="محصول جدید" error={error} onClose={() => setOpen(false)}>
-          <form className="space-y-3" onSubmit={save}>
+  if (open) {
+    const plan=plans.find(item=>item.id===form.plan_id);
+    return <div className="space-y-4">
+      <PageHead title="محصول جدید" back={{href:"/admin/products",label:"محصولات"}} />
+      {error && <Banner>{error}</Banner>}
+      <div className="pc-grid-two">
+        <form className="pc-card pc-form-card" onSubmit={save}>
+            <h2 className="pc-section-title">مشخصات محصول</h2>
             <Field label="پنل">
               <select className={inputClass} value={form.panel_id} onChange={(e) => { const id = Number(e.target.value); setForm({ ...form, panel_id: id, plan_id: 0 }); loadPlans(id); }} required>
                 <option value={0}>انتخاب کنید</option>
@@ -137,10 +124,34 @@ export default function ProductsPage() {
               <Field label="تومان هر روز"><input className={inputClass} type="number" min={0} value={form.price_per_day} onChange={(e) => setForm({ ...form, price_per_day: Number(e.target.value) })} required /></Field>
             </div>
             {warnings.map((item) => <Banner key={item} tone="warn">{item}</Banner>)}
-            <Button type="submit" className="w-full">ساخت محصول</Button>
+            <Field label="وضعیت"><select className={inputClass} value={form.active?"active":"disabled"} onChange={e=>setForm({...form,active:e.target.value==="active"})}>
+              <option value="active">فعال</option><option value="disabled">غیرفعال</option>
+            </select></Field>
+            {saved && <Banner tone="ok">محصول ثبت شد.</Banner>}
+            <div className="flex flex-wrap gap-2"><Button type="submit" disabled={saving||saved||!form.plan_id}>{saving?"در حال ثبت…":"ساخت محصول"}</Button>
+              <ActionLink href="/admin/products" secondary>{saved?"بازگشت به محصولات":"انصراف"}</ActionLink></div>
           </form>
-        </Modal>
-      ) : null}
-    </div>
-  );
+        <section className="pc-card">
+          <h2 className="pc-section-title">پلن انتخاب‌شده</h2>
+          <Facts rows={[
+            ["نام پلن",plan?.name||"—"],["پنل",panels.find(item=>item.id===form.panel_id)?.name||"—"],
+            ["محدودیت دستگاه",plan?.device_limit??"—"],["محدودیت سرعت",plan?.speed_limit??"—"],
+            ["روش ریست ترافیک",plan?.reset_traffic_method??"—"],
+          ]}/>
+        </section>
+      </div>
+    </div>;
+  }
+  return <div className="space-y-4">
+    <PageHead title="محصولات" description="مدیریت محصولات و نرخ‌های فروش" action={<ActionLink href="/admin/products/new" icon="plus">محصول جدید</ActionLink>}/>
+    {error && <Banner>{error}</Banner>}
+    {loading ? <p className="pc-card pc-quiet" role="status">در حال بارگیری محصولات…</p> :
+      <ResponsiveTable label="محصولات" icon="product" columns={["نام محصول","پنل","پلن","دامنه","نرخ هر گیگ","نرخ هر روز","وضعیت","عملیات"]}
+        empty="محصولی نیست." rows={items.map(product=>{
+          const badge=<Badge tone={product.active?"ok":"slate"}>{product.active?"فعال":"غیرفعال"}</Badge>;
+          const action=<Button tone="ghost" onClick={()=>toggle(product)}>{product.active?"خاموش کردن":"روشن کردن"}</Button>;
+          return {id:product.id,cells:[product.name,product.panel_name,product.plan_id,<bdi dir="ltr" className="break-all">{product.email_domain}</bdi>,formatToman(product.price_per_gb),formatToman(product.price_per_day),badge,action],
+            title:product.name,summary:<><span>{product.panel_name} · {product.plan_id}</span><div>{formatToman(product.price_per_gb)} / گیگ · {formatToman(product.price_per_day)} / روز</div></>,aside:badge,action};
+        })}/>}
+  </div>;
 }

@@ -3,7 +3,8 @@
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useRef, useState, type RefObject } from "react";
-import { Banner } from "@/components/ui";
+import { Badge, Banner } from "@/components/ui";
+import { Icon, IconTile } from "@/components/Icons";
 import { api } from "@/lib/api";
 import { STATUS_LABEL, formatDate, formatDays, formatGb, formatInt } from "@/lib/format";
 import type { SubscriptionRow } from "@/lib/types";
@@ -22,32 +23,12 @@ function readOffset(value: string | null) {
   return Number.isSafeInteger(offset) ? offset : 0;
 }
 
-function Username({ row, showStatus }: { row: SubscriptionRow; showStatus?: boolean }) {
-  return (
-    <span className={styles.usernameGroup} dir="ltr">
-      <bdi className={styles.username} dir="ltr">{row.username}</bdi>
-      {row.status === "active" ? (
-        <svg
-          className={styles.activeIcon}
-          width="16"
-          height="16"
-          viewBox="0 0 16 16"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.5"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          role="img"
-          aria-label="فعال"
-        >
-          <circle cx="8" cy="8" r="6.25" />
-          <path d="m5.25 8 1.75 1.75 3.75-3.75" />
-        </svg>
-      ) : showStatus ? (
-        <span className={styles.statusLabel} dir="rtl">{STATUS_LABEL[row.status] ?? row.status}</span>
-      ) : null}
-    </span>
-  );
+function Username({row}: {row:SubscriptionRow}) {
+  return <bdi className={styles.username} dir="ltr">{row.username}</bdi>;
+}
+
+function Status({row}: {row:SubscriptionRow}) {
+  return <Badge tone={row.status==="active"?"ok":row.status==="expired"?"slate":"bad"}>{STATUS_LABEL[row.status]??row.status}</Badge>;
 }
 
 function SubscriptionSearch({
@@ -127,7 +108,7 @@ function SubscriptionSearch({
           type="search"
           dir="ltr"
           aria-label="جست‌وجوی نام کاربری"
-          placeholder="Enter the username"
+          placeholder="جست‌وجو بر اساس نام کاربری..."
           value={draft}
           onChange={(event) => updateDraft(event.currentTarget.value)}
           onKeyDown={(event) => {
@@ -208,21 +189,22 @@ function SubscriptionResults({
               <table className={styles.table} aria-labelledby="partner-subscriptions-title">
                 <thead>
                   <tr>
-                    <th scope="col">محصول</th>
+                    <th scope="col">نام کاربری</th><th scope="col">محصول</th>
                     <th scope="col">سقف حجم</th>
                     <th scope="col">تاریخ انقضا</th>
                     <th scope="col">روز باقی‌مانده</th>
-                    <th scope="col" aria-label="مدیریت" />
-                    <th className={styles.userColumn} scope="col">کاربر</th>
+                    <th scope="col">وضعیت</th><th scope="col">جزئیات</th>
                   </tr>
                 </thead>
                 <tbody>
                   {data.items.map((row) => (
                     <tr key={row.id}>
+                      <th scope="row"><Username row={row} /></th>
                       <td>{row.product_name ?? "—"}</td>
                       <td>{formatGb(row.traffic_cap_gb)}</td>
                       <td><bdi dir="ltr">{formatDate(row.expired_jalali)}</bdi></td>
                       <td>{formatDays(row.days_left)}</td>
+                      <td><Status row={row}/></td>
                       <td>
                         <Link
                           className={styles.manageLink}
@@ -231,10 +213,9 @@ function SubscriptionResults({
                           onNavigate={onNavigate}
                           prefetch={false}
                         >
-                          مدیریت
+                          جزئیات
                         </Link>
                       </td>
-                      <th className={styles.userColumn} scope="row"><Username row={row} showStatus /></th>
                     </tr>
                   ))}
                 </tbody>
@@ -249,35 +230,13 @@ function SubscriptionResults({
                       onNavigate={onNavigate}
                       prefetch={false}
                     >
+                      <IconTile name="layers"/>
                       <span className={styles.rowIdentity}>
                         <Username row={row} />
-                        <span className={styles.rowProduct} dir="rtl">{row.product_name ?? "—"}</span>
+                        <span className={styles.rowProduct} dir="rtl">{row.product_name ?? "—"} · {row.status==="active"?formatDays(row.days_left)+" مانده":formatDate(row.expired_jalali)}</span>
                       </span>
-                      <span className={styles.rowMeta}>
-                        {row.status === "active" ? (
-                          <span>{formatDays(row.days_left)} مانده</span>
-                        ) : (
-                          <>
-                            <span className={styles.statusLabel}>{STATUS_LABEL[row.status] ?? row.status}</span>
-                            <bdi dir="ltr">{formatDate(row.expired_jalali)}</bdi>
-                          </>
-                        )}
-                      </span>
-                      <svg
-                        className={styles.rowChevron}
-                        width="16"
-                        height="16"
-                        viewBox="0 0 16 16"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="1.5"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        direction="ltr"
-                        aria-hidden="true"
-                      >
-                        <path d="M6 3l5 5-5 5" />
-                      </svg>
+                      <span className={styles.rowMeta}><Status row={row}/></span>
+                      <Icon name="left" className={styles.rowChevron}/>
                     </Link>
                   </li>
                 ))}
@@ -357,7 +316,7 @@ function SubscriptionList() {
     <>
       <header className={styles.listHeader}>
         <div className={styles.headerGrid}>
-          <h2 id="partner-subscriptions-title">اشتراک‌ها</h2>
+          <div><h1 id="partner-subscriptions-title">اشتراک‌ها</h1><p className="pc-quiet">مشاهده و مدیریت اشتراک‌ها</p></div>
           <Link
             className={styles.createAction}
             href={`${subscriptionsPath}/new`}
@@ -368,11 +327,11 @@ function SubscriptionList() {
             </svg>
             ساخت اشتراک
           </Link>
-          <SubscriptionSearch search={search} pendingSearch={pendingSearch} />
         </div>
       </header>
 
       <section ref={results} className={styles.panel} aria-labelledby="partner-subscriptions-title" tabIndex={-1}>
+        <div className={styles.toolbar}><SubscriptionSearch search={search} pendingSearch={pendingSearch} /></div>
         <SubscriptionResults
           key={JSON.stringify([query, offset])}
           query={query}

@@ -5,16 +5,13 @@
 .headerGrid {
   @apply grid items-center gap-x-4 gap-y-3 mb-4;
   grid-template-columns: minmax(0, 1fr) max-content;
-  grid-template-areas: "title create" "search search";
+  grid-template-areas: "title create";
 }
 
-.headerGrid h2 {
-  @apply text-2xl font-bold leading-snug sm:text-3xl;
-  grid-area: title;
-}
+.headerGrid h1 { font-size:29px; font-weight:700; line-height:1.45; color:var(--pc-heading); }
 
 .createAction {
-  @apply inline-flex min-h-11 items-center justify-center gap-2 bg-violet-700 px-4 text-sm font-bold text-white transition-colors hover:bg-violet-800;
+  @apply inline-flex min-h-11 items-center justify-center gap-2 bg-brand px-4 text-sm font-bold text-white transition-colors hover:bg-branddark;
   grid-area: create;
   justify-self: end;
   border-radius: 0.625rem;
@@ -25,16 +22,7 @@
 }
 
 .searchForm {
-  grid-area: search;
-  justify-self: center;
   width: min(100%, 20rem);
-}
-
-@container subscriptions-header (min-width: 42rem) {
-  .headerGrid {
-    grid-template-columns: max-content minmax(0, 1fr) max-content;
-    grid-template-areas: "title search create";
-  }
 }
 
 .searchControl {
@@ -57,7 +45,7 @@
 }
 
 .searchAction {
-  @apply grid min-h-11 place-items-center text-slate-600 hover:text-violet-800;
+  @apply grid min-h-11 place-items-center text-slate-600 hover:text-brand;
   grid-column: 1;
   grid-row: 1;
   border-radius: inherit;
@@ -90,14 +78,14 @@
 
 .searchControl input:focus-visible,
 .searchAction:focus-visible {
-  @apply outline outline-2 outline-violet-700;
+  @apply outline outline-2 outline-brand;
   outline-offset: -3px;
 }
 
 .createAction:focus-visible,
 .manageLink:focus-visible,
 .pagination button:focus-visible {
-  @apply outline outline-2 outline-violet-700;
+  @apply outline outline-2 outline-brand;
   outline-offset: 3px;
 }
 
@@ -107,7 +95,7 @@
 }
 
 .panel:focus-visible {
-  @apply outline outline-2 outline-offset-2 outline-violet-700;
+  @apply outline outline-2 outline-offset-2 outline-brand;
 }
 
 .count {
@@ -173,7 +161,7 @@
 
 .manageLink,
 .pagination button {
-  @apply inline-flex min-h-11 items-center bg-violet-50 px-3 text-sm font-bold text-violet-800;
+  @apply inline-flex min-h-11 items-center bg-[var(--pc-icon-tint)] px-3 text-sm font-bold text-brand;
   border-radius: 0.625rem;
 }
 
@@ -231,12 +219,12 @@
 
   .rowLink {
     @apply grid min-h-11 items-center gap-x-3 px-3 py-2 text-sm leading-snug text-slate-900 no-underline;
-    grid-template-columns: 1rem max-content minmax(0, 1fr);
-    grid-template-areas: "chevron meta identity";
+    grid-template-columns: 34px minmax(0,1fr) max-content 16px;
+    grid-template-areas: "icon identity meta chevron";
   }
 
   .rowLink:focus-visible {
-    @apply rounded-lg outline outline-2 outline-violet-700;
+    @apply rounded-lg outline outline-2 outline-brand;
     outline-offset: -2px;
   }
 
@@ -246,7 +234,7 @@
   }
 
   .rowIdentity {
-    @apply min-w-0 text-left;
+    @apply min-w-0 text-right;
     grid-area: identity;
   }
 
@@ -269,7 +257,9 @@
     font-size: inherit;
   }
 
+  .rowLink > :global(.pc-icon-tile) { grid-area:icon; width:32px;height:32px; }
   .rowChevron {
+    width:16px;
     @apply text-slate-600;
     grid-area: chevron;
   }
@@ -283,4 +273,12 @@
   .createAction {
     @apply px-3;
   }
+}
+
+.toolbar { padding:12px 14px; border-bottom:1px solid var(--pc-border); }
+.panel,.searchControl { border-color:var(--pc-border);background:var(--pc-surface); }
+.table thead th {background:var(--pc-icon-tint);}
+@media(max-width:680px) {
+  .headerGrid h1 { font-size:24px; }
+  .searchForm { width:100%; }
 }

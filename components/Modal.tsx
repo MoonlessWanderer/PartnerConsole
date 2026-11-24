@@ -33,7 +33,7 @@ export function Modal({
       onCancel={(event) => { event.preventDefault(); onClose(); }}
       className="fixed inset-0 m-0 h-full max-h-none w-full max-w-none items-end justify-center bg-transparent p-3 open:flex sm:items-center">
       <div className="absolute inset-0 bg-slate-900/50" aria-hidden="true" onClick={onClose} />
-      <div className="relative max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-2xl bg-white p-4 shadow-xl">
+      <div className="pc-dialog-panel">
         <div className="mb-3 flex items-center justify-between gap-3">
           <h2 id={titleId} className="text-base font-bold">{title}</h2>
           <button type="button" onClick={onClose} className="min-h-11 min-w-11 rounded-xl text-slate-500 hover:bg-slate-100" aria-label="بستن پنجره">

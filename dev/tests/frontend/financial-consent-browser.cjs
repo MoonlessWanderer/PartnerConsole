@@ -108,7 +108,7 @@ async function fillPurchase(page, username, gb) {
 }
 
 function accountLabel(page, account) {
-  return page.locator("aside, header").getByText(account.username, { exact: true }).filter({ visible: true });
+  return page.locator("aside, header").getByText(account.username, { exact: true }).filter({ visible: true }).first();
 }
 
 async function switchAccount(page, shared, first, second, snapshot) {
@@ -575,18 +575,22 @@ async function run() {
     await page.waitForURL(web + "/partner/subscriptions/" + sub.id);
     const traffic = (gb) => request(lab, "/_lab/users/" + sub.v2_user_id + "/traffic", { u: gb * 1073741824, d: 0 }).then(ok);
     await traffic(1);
+    const management = button(page, "مدیریت");
+    await management.or(button(page, "ریست ترافیک")).waitFor();
+    if (await management.isVisible()) await management.click();
     const quotePending = response(page, "/api/partner/subscriptions/quote");
-    await button(page, "ریست ترافیک").click();
+    await page.getByRole("button", { name: /^ریست ترافیک/ }).click();
     const quote = await (await quotePending).json();
     assert.equal(quote.toman, 1000);
-    const dialog = page.getByRole("dialog");
-    await dialog.getByText(/^مبلغ:/).waitFor();
+    const dialog = page.getByRole("dialog").or(page.getByRole("main").filter({ has: button(page, "تأیید ریست ترافیک") }));
+    const confirmReset = button(dialog, "تأیید").or(button(dialog, "تأیید ریست ترافیک"));
+    await dialog.getByText(/^مبلغ:/).or(dialog.getByText("برداشت از کیف پول", { exact: true })).waitFor();
     await screen(page, "reset-1000-before.png");
     await traffic(3);
     const before = await snapshot();
     const mutation = "/api/partner/subscriptions/" + sub.id + "/reset-traffic";
     const resetPending = response(page, mutation);
-    await button(dialog, "تأیید").click();
+    await confirmReset.click();
     const reset = await resetPending;
     const after = await snapshot();
     checks.push({ finding: "B-01", route: mutation, approved: 1000, status: reset.status(), before, after });
@@ -600,7 +604,7 @@ async function run() {
       await dialog.getByText(/شرایط یا نشست تغییر کرده/).waitFor();
       await screen(page, "reset-stale-rejected.png");
       const freshPending = response(page, mutation);
-      await button(dialog, "تأیید").click();
+      await confirmReset.click();
       assert.equal((await freshPending).status(), 200);
       const settled = await snapshot();
       assert.equal(before.first.wallet - settled.first.wallet, 3000);
