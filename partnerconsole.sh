@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Installer v1.0.5 for Partner Console 1.0.5.
+# Installer v1.0.6 for Partner Console 1.0.6.
 # The app runs as ppv1. Root never executes a file ppv1 can write.
 set -euo pipefail
 umask 077
 
-RELEASE_TAG="v1.0.5"
+RELEASE_TAG="v1.0.6"
 APP_VERSION="${RELEASE_TAG#v}"
-RELEASE_TREE_SHA256="8227be08d65e8abbfb7bad6ed07505de8aa21971b5ee12317969cb751531d171"
+RELEASE_TREE_SHA256="ac15b7e3cb07241c9411cad0ec59db0d3444c8346ff15d99b0e7db7409730fc0"
 OFFICIAL_REPO="https://github.com/MoonlessWanderer/PartnerConsole.git"
 APP_USER="ppv1"
 DB_NAME="partnerconsole"
@@ -208,13 +208,7 @@ EOF
 }
 
 mysql_guard_preserves_ssh() {
-  local file="$1"
-  grep -q 'policy accept' "$file" || return 1
-  grep -q 'tcp dport { 3306, 33060 } drop' "$file" || return 1
-  if grep -E -q 'dport 22|dport ssh|flush ruleset|policy drop' "$file"; then
-    return 1
-  fi
-  return 0
+  cmp -s "$1" <(mysql_guard_nft)
 }
 
 wait_mysql() {
@@ -562,32 +556,122 @@ EOF
   assert_mysql_config_access
 }
 
+# Snapshot kernel listeners and socket inodes. Socket-activated listeners can
+# belong to systemd alone until it passes the open sockets to sshd.
+ssh_listener_snapshot() {
+  pp_python - <<'PYSSH'
+import os
+import re
+import subprocess
+import sys
+
+def endpoint(value):
+    host, port = value.rsplit(":", 1)
+    host = host.strip("[]")
+    return ("*" if host in ("*", "::", "0.0.0.0") else host, int(port))
+
+def is_sshd(pid):
+    try:
+        return os.stat(f"/proc/{pid}").st_uid == 0 and os.path.samefile(f"/proc/{pid}/exe", "/usr/sbin/sshd")
+    except OSError:
+        return False
+
+socket_endpoints = set()
+if subprocess.run(["systemctl", "is-active", "--quiet", "ssh.socket"]).returncode == 0:
+    listen = subprocess.check_output(["systemctl", "show", "ssh.socket", "--property=Listen", "--value"], text=True)
+    socket_endpoints = {endpoint(value) for value in re.findall(r"(\S+) \(Stream\)", listen)}
+    if not socket_endpoints:
+        sys.exit("Active ssh.socket did not report a TCP stream address.")
+
+matched = set()
+listeners = set()
+for family in ("4", "6"):
+    result = subprocess.check_output(["ss", "-H", f"-{family}", "-lntpe"], text=True)
+    for row in result.splitlines():
+        fields = row.split()
+        if len(fields) < 5 or fields[0] != "LISTEN":
+            continue
+        owners = re.findall(r'"([^"]+)",pid=(\d+),fd=\d+', row)
+        if not owners:
+            continue
+        local = endpoint(fields[3])
+        managed = ("systemd", "1") in owners and local in socket_endpoints
+        if managed:
+            matched.add(local)
+        if managed or any(name == "sshd" and is_sshd(pid) for name, pid in owners):
+            identifier = re.search(r"\bino:(\d+)\b", row)
+            if not identifier or identifier[1] == "0":
+                sys.exit("Could not identify a live SSH listener socket.")
+            listeners.add((family, fields[3], identifier[1]))
+if socket_endpoints - matched:
+    sys.exit("Active ssh.socket addresses could not be verified in the live listener list.")
+if not listeners:
+    sys.exit("No live SSH listener owned by sshd or active ssh.socket was found.")
+for family, local, inode in sorted(listeners):
+    print(f"{family} {local} {inode}")
+PYSSH
+}
+
 mysql_network_guard_up() {
-  local tmp
+  local before after listener local_address tmp rules
+  if ! before="$(ssh_listener_snapshot)"; then
+    log "SSH listener check failed before applying the MySQL firewall guard."
+    return 1
+  fi
+  while read -r _ local_address _; do
+    case "${local_address##*:}" in
+      3306|33060)
+        log "SSH is listening on a port reserved for MySQL. The firewall guard was not changed."
+        return 1
+        ;;
+    esac
+  done <<< "$before"
   if ! command -v nft >/dev/null 2>&1; then
-    apt_install nftables
+    apt_install nftables || { log "Could not install nftables for the MySQL firewall guard."; return 1; }
     hash -r
   fi
-  command -v nft >/dev/null 2>&1 || return 1
-  install -d -o root -g root -m 755 /etc/partnerconsole
-  chmod 755 /etc/partnerconsole
-  tmp="$(mktemp)"
-  {
-    echo "# This table is loaded for the current boot only. It is not a boot service."
-    echo "# After reboot, MySQL stays local only when its own configuration is in effect."
-    mysql_guard_nft
-  } > "$tmp"
-  install -o root -g root -m 644 "$tmp" /etc/partnerconsole/mysql-guard.nft
+  if ! command -v nft >/dev/null 2>&1 ||
+     ! install -d -o root -g root -m 755 /etc/partnerconsole ||
+     ! tmp="$(mktemp)"; then
+    log "Could not prepare the MySQL firewall guard."
+    return 1
+  fi
+  if ! mysql_guard_nft > "$tmp" ||
+     ! mysql_guard_preserves_ssh "$tmp" ||
+     ! install -o root -g root -m 644 "$tmp" /etc/partnerconsole/mysql-guard.nft; then
+    rm -f "$tmp"
+    log "Could not prepare the MySQL firewall guard."
+    return 1
+  fi
   rm -f "$tmp"
-  chmod 644 /etc/partnerconsole/mysql-guard.nft
-  mysql_guard_preserves_ssh /etc/partnerconsole/mysql-guard.nft || return 1
-  # Replace only this table. Do not flush the host ruleset and do not enable nftables.service.
-  nft delete table inet partnerconsole >/dev/null 2>&1 || true
-  nft -f /etc/partnerconsole/mysql-guard.nft || return 1
-  nft list table inet partnerconsole | grep -q '3306' || return 1
-  ss -lnt | awk '{
-    for (i = 1; i <= NF; i++) if ($i ~ /:22$/) found = 1
-  } END { exit(found ? 0 : 1) }'
+  # Replace only this table, in one transaction so a failure keeps any old guard.
+  if ! {
+    if nft list table inet partnerconsole >/dev/null 2>&1; then
+      printf '%s\n' 'delete table inet partnerconsole'
+    fi
+    cat /etc/partnerconsole/mysql-guard.nft
+  } | nft -f -; then
+    log "Could not apply the MySQL firewall guard for ports 3306 and 33060."
+    return 1
+  fi
+  if ! rules="$(nft -nn list table inet partnerconsole)" ||
+     ! grep -Fq 'type filter hook input priority' <<< "$rules" ||
+     ! grep -Fq 'policy accept;' <<< "$rules" ||
+     ! grep -Eq 'iifname "lo".*tcp dport \{ 3306, 33060 \} accept|tcp dport \{ 3306, 33060 \} iifname "lo" accept' <<< "$rules" ||
+     ! grep -Fq 'tcp dport { 3306, 33060 } drop' <<< "$rules"; then
+    log "Could not verify the active MySQL firewall guard for ports 3306 and 33060."
+    return 1
+  fi
+  if ! after="$(ssh_listener_snapshot)"; then
+    log "SSH listener check failed after applying the MySQL firewall guard."
+    return 1
+  fi
+  while IFS= read -r listener; do
+    if ! grep -Fxq -- "$listener" <<< "$after"; then
+      log "An SSH listener changed while the MySQL firewall guard was applied."
+      return 1
+    fi
+  done <<< "$before"
 }
 
 mysql_runtime_is_safe() {
@@ -631,7 +715,7 @@ ensure_mysql() {
   if command -v mysqld >/dev/null 2>&1 && ! mysql_version_ok; then
     die "MySQL is already installed, but it is not 8.4. It was left unchanged."
   fi
-  mysql_network_guard_up || die "Public MySQL ports could not be blocked. MySQL was not installed, and SSH was not changed."
+  mysql_network_guard_up || die "MySQL preflight failed. Installation or Update stopped before deployment."
   write_mysql_local_config || mysql_fail_closed "The MySQL configuration was not readable before startup. Installation stopped."
   if ! mysql_version_ok; then
     log "Installing MySQL 8.4..."

@@ -26,7 +26,7 @@ browser="${CHROME:-$(command -v google-chrome || command -v chromium || true)}"
 rc6_tag=v1.0.3-rc.6
 baseline_tag="${INSTALL_BASELINE:-v1.0.3}"
 case "$baseline_tag" in
-  v1.0.3-rc.6|v1.0.3-rc.7|v1.0.3) ;;
+  v1.0.3-rc.6|v1.0.3-rc.7|v1.0.3|v1.0.4) ;;
   *) fail 'unsupported installer baseline' ;;
 esac
 origin=https://console.example.test
@@ -45,25 +45,40 @@ export PC_FIXTURE_ADMIN_PASSWORD
 checkout_git() { git -c safe.directory="$repo" -C "$repo" "$@"; }
 new_tag="$(sed -n 's/^RELEASE_TAG="\(.*\)"$/\1/p' "$repo/partnerconsole.sh")"
 new_commit="$(git -c safe.directory="$release_origin" -C "$release_origin" rev-parse "refs/tags/${new_tag}^{commit}")"
-[[ "$new_commit" == "$(checkout_git rev-parse HEAD)" ]] || fail "$new_tag in RELEASE_ORIGIN is not the checked-out commit"
-printf 'testing %s at %s\n' "$new_tag" "$new_commit"
+source_commit="$(checkout_git rev-parse HEAD)"
+origin_git() { git -c safe.directory="$release_origin" -C "$release_origin" "$@"; }
+origin_git show "$new_commit:partnerconsole.sh" > "$work/target.sh"
+if [[ "$new_commit" != "$source_commit" ]]; then
+  [[ "$(origin_git rev-parse "$new_commit^")" == "$source_commit" &&
+     "$(origin_git diff --name-only "$source_commit" "$new_commit")" == partnerconsole.sh ]] ||
+    fail "private candidate differs from the checkout"
+  cmp -s <(sed '/^RELEASE_TREE_SHA256=/d' "$repo/partnerconsole.sh") \
+    <(sed '/^RELEASE_TREE_SHA256=/d' "$work/target.sh") || fail "private installer differs beyond its tree pin"
+fi
+printf 'testing %s at %s (checkout %s)\n' "$new_tag" "$new_commit" "$source_commit"
 
-fixtures="$repo/dev/tests/fixtures/upgrade"
-(cd "$fixtures" && sha256sum --check --strict SHA256SUMS) || fail 'fixture archive checksum'
 baseline_tree="$work/baseline"
-mkdir "$baseline_tree"
-tar -xzf "$fixtures/$baseline_tag.tar.gz" -C "$baseline_tree"
-git -C "$baseline_tree" init -q
-git -C "$baseline_tree" add --all
-git -C "$baseline_tree" -c user.name=Fixture -c user.email=fixture@example.invalid commit -qm "Install fixture $baseline_tag"
-git -C "$baseline_tree" tag "$baseline_tag"
+if [[ "$baseline_tag" == v1.0.4 ]]; then
+  git -c safe.directory="$repo" clone --quiet --no-local --branch "$baseline_tag" --single-branch "$repo" "$baseline_tree"
+  grep -Fxq 'RELEASE_TAG="v1.0.4"' "$baseline_tree/partnerconsole.sh" || fail 'v1.0.4 baseline installer'
+  baseline_pin="$(sed -n 's/^RELEASE_TREE_SHA256="\([^"]*\)"$/\1/p' "$baseline_tree/partnerconsole.sh")"
+else
+  fixtures="$repo/dev/tests/fixtures/upgrade"
+  (cd "$fixtures" && sha256sum --check --strict SHA256SUMS) || fail 'fixture archive checksum'
+  mkdir "$baseline_tree"
+  tar -xzf "$fixtures/$baseline_tag.tar.gz" -C "$baseline_tree"
+  git -C "$baseline_tree" init -q
+  git -C "$baseline_tree" add --all
+  git -C "$baseline_tree" -c user.name=Fixture -c user.email=fixture@example.invalid commit -qm "Install fixture $baseline_tag"
+  git -C "$baseline_tree" tag "$baseline_tag"
+  baseline_pin="$(
+    export PARTNERCONSOLE_LIBRARY=1
+    # shellcheck disable=SC1091
+    source "$repo/partnerconsole.sh"
+    tree_sha256 "$baseline_tree"
+  )"
+fi
 baseline_commit="$(git -C "$baseline_tree" rev-parse HEAD)"
-baseline_pin="$(
-  export PARTNERCONSOLE_LIBRARY=1
-  # shellcheck disable=SC1091
-  source "$repo/partnerconsole.sh"
-  tree_sha256 "$baseline_tree"
-)"
 cp "$baseline_tree/partnerconsole.sh" "$work/baseline.sh"
 
 # The tests answer the installer prompts and replace only install_deps, whose
@@ -267,7 +282,7 @@ else
   runuser -u "$browser_user" -- openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=localhost \
     -addext subjectAltName=DNS:localhost -keyout "$work/browser/key.pem" -out "$work/browser/cert.pem" >"$work/tls.log" 2>&1
   runuser -u "$browser_user" -- env PATH="$PATH" HOME="$browser_home" PLAYWRIGHT_MODULE="$PLAYWRIGHT_MODULE" \
-    PC_FIXTURE_ADMIN="$fixture_admin" PC_FIXTURE_PASSWORD="$fixture_password" \
+    PC_FIXTURE_BASELINE="$baseline_tag" PC_FIXTURE_ADMIN="$fixture_admin" PC_FIXTURE_PASSWORD="$fixture_password" \
     node "$repo/dev/tests/installer/financial-upgrade-browser.cjs" "$browser" "$work/browser" "$origin" >"$work/browser.log" 2>&1 &
   probe_pid=$!
   wait_for_browser ready
@@ -283,7 +298,7 @@ for service in api web; do
   before_start[$service]="$(service_field "$service" starttime)"
 done
 PC_RELEASE_ORIGIN="$release_origin" \
-  run_with "$repo/partnerconsole.sh" update_app || fail "official Update to $new_tag"
+  run_with "$work/target.sh" update_app || fail "official Update to $new_tag"
 [[ "$(release_field tag)" == "$new_tag" && "$(release_field commit)" == "$new_commit" ]] || fail "$new_tag release marker"
 for service in api web; do
   [[ "$(service_field "$service" pid)" != "${before_pid[$service]}" &&

@@ -233,6 +233,10 @@ mysql_guard_preserves_ssh "$guard" || fail "the MySQL guard can change SSH or fl
 if grep -q 'systemctl enable nftables' "$repo/partnerconsole.sh" || grep -q 'partnerconsole-mysql-guard.service' "$repo/partnerconsole.sh"; then
   fail "the MySQL network guard is installed as a boot service"
 fi
+printf 'tcp dport 24867 drop\n' >> "$guard"
+if mysql_guard_preserves_ssh "$guard"; then
+  fail "the MySQL guard accepted a rule affecting the fixture SSH port"
+fi
 ok "mysql guard keeps ssh"
 
 (
