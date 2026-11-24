@@ -5,7 +5,6 @@ set -euo pipefail
 umask 077
 
 RELEASE_TAG=""
-APP_VERSION="${RELEASE_TAG#v}"
 RELEASE_SOURCE_COMMIT=""
 RELEASE_ARCHIVE_SHA256=""
 OFFICIAL_RELEASES="https://github.com/MoonlessWanderer/PartnerConsole/releases"
@@ -232,13 +231,16 @@ download_release_file() {
     --proto '=https' --proto-redir '=https' --connect-timeout 10 --max-time 120 --retry 2 "$@"
 }
 
-fetch_release_package() (
-  local work installer="$1"
+assert_package_identity() {
   [[ "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)(\.(0|[1-9][0-9]*)){2}$ &&
      "$RELEASE_SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ &&
      "$RELEASE_ARCHIVE_SHA256" =~ ^[0-9a-f]{64}$ ]] ||
     die "Use partnerconsole.sh from a published Partner Console release."
-  prepare_control_dirs
+}
+fetch_release_package() (
+  local work installer="$1"
+  assert_package_identity
+  prepare_control_dirs || return 1
   work="$(mktemp -d -- "$APP_ROOT/.release/package.XXXXXXXX")" || return 1
   trap 'rm -rf -- "$work"' EXIT
   download_release_file -o "$work/package.tar.gz" \
@@ -1131,6 +1133,7 @@ PY
 }
 
 setup_app() {
+  assert_package_identity
   [[ ! -e "$APP_ROOT/.release/current" ]] || die "Use Update for an existing installation."
   install_deps
   ensure_user

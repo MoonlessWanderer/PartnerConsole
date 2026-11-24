@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Used only when preparing historical Git-based test baselines.
 tree_sha256() {
-  pp_python - "$1" <<'PY'
+  python3 - "$1" <<'PY'
 import hashlib, subprocess, sys
 from pathlib import Path
 root = Path(sys.argv[1])

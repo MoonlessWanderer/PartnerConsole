@@ -25,14 +25,14 @@ grep -Fxq 'commit=154fb568d79a95dd9d85076f0a310e3bf0b55497' "$app/.release/curre
 # shellcheck source=/dev/null
 source "$tools/release-http-fixture.sh"
 setup_release_feed
-cp -r "$a" "$feed/v1.0.9"
-cp -r "$b" "$feed/v1.0.10"
-cat > "$feed/bin/git" <<'EOF'
+cp -r "$a" "$PC_RELEASE_FIXTURE_DIR/v1.0.9"
+cp -r "$b" "$PC_RELEASE_FIXTURE_DIR/v1.0.10"
+cat > "$PC_RELEASE_FIXTURE_DIR/bin/git" <<'EOF'
 #!/bin/bash
 echo 'Git was invoked after the legacy installation' >&2
 exit 97
 EOF
-chmod 700 "$feed/bin/git"
+chmod 700 "$PC_RELEASE_FIXTURE_DIR/bin/git"
 sed -i 's|^PANEL_PRIVATE_ORIGINS=$|PANEL_PRIVATE_ORIGINS=http://127.0.0.1:18788|' "$app/config/api.env"
 chown --reference="$app/config/web.env" "$app/config/api.env"
 chmod --reference="$app/config/web.env" "$app/config/api.env"
@@ -59,12 +59,14 @@ runtime() {
   local tag="$1"
   grep -Fxq "tag=$tag" "$app/.release/current"
   grep -Fxq "commit=$expected" "$app/.release/current"
-  cmp "$feed/$tag/partnerconsole.sh" "$app/partnerconsole.sh"
+  cmp "$PC_RELEASE_FIXTURE_DIR/$tag/partnerconsole.sh" "$app/partnerconsole.sh"
 }
 publish_fixture v1.0.9
 old="$app/dev/docs/releases/v1.0.8/RELEASE_NOTES.md"
 cp -p "$old" "$work/original"
 printf 'local edit\n' >> "$old"
+# Already root on this disposable runner, including the log redirect.
+# shellcheck disable=SC2024
 if sudo partnerconsole update > "$work/edited.log" 2>&1; then exit 1; fi
 grep -Fq 'installed files differ' "$work/edited.log"
 grep -Fq 'dev/docs/releases/v1.0.8/RELEASE_NOTES.md' "$work/edited.log"
@@ -79,9 +81,11 @@ preserved
 grep -Fxq 'keep personal file' "$app/dev/docs/personal.txt"
 echo 'v1.0.8 to A: stopped on local edit; removed unchanged managed development files; preserved personal file, config, wallet, ledger and subscription'
 publish_fixture v1.0.10
-archive="$feed/v1.0.10/partnerconsole-v1.0.10.tar.gz"
+archive="$PC_RELEASE_FIXTURE_DIR/v1.0.10/partnerconsole-v1.0.10.tar.gz"
 mv "$archive" "$work/good.tar.gz"
 printf 'truncated release\n' > "$archive"
+# Already root on this disposable runner, including the log redirect.
+# shellcheck disable=SC2024
 if sudo partnerconsole update > "$work/corrupt.log" 2>&1; then exit 1; fi
 grep -Fq 'Application package checksum mismatch' "$work/corrupt.log"
 runtime v1.0.9
@@ -92,11 +96,11 @@ runtime v1.0.10
 preserved
 cp "$app/runtime/pids/api.id" "$work/api.id"
 cp "$app/runtime/pids/web.id" "$work/web.id"
-before_requests="$(wc -l < "$feed/requests")"
+before_requests="$(wc -l < "$PC_RELEASE_FIXTURE_DIR/requests")"
 sudo partnerconsole update
 cmp "$app/runtime/pids/api.id" "$work/api.id"
 cmp "$app/runtime/pids/web.id" "$work/web.id"
-[[ "$(wc -l < "$feed/requests")" == $((before_requests + 1)) ]]
+[[ "$(wc -l < "$PC_RELEASE_FIXTURE_DIR/requests")" == $((before_requests + 1)) ]]
 preserved
 grep -Fxq 'keep personal file' "$app/dev/docs/personal.txt"
 echo 'A to B: rejected corrupt archive, updated via installed launcher, preserved data. Repeating Update did not download or restart.'

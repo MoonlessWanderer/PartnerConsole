@@ -12,17 +12,17 @@ tag="$(sed -n 's/^RELEASE_TAG="\(.*\)"$/\1/p' "$assets/partnerconsole.sh")"
 # shellcheck source=/dev/null
 source "$tools/release-http-fixture.sh"
 setup_release_feed
-cp -r "$assets" "$feed/$tag"
+cp -r "$assets" "$PC_RELEASE_FIXTURE_DIR/$tag"
 publish_fixture "$tag"
 work="$(mktemp -d)"
 python3 -c 'import secrets; print(secrets.token_urlsafe(24))' > "$work/password"
 mkdir "$work/empty"
-cat > "$feed/bin/git" <<'EOF'
+cat > "$PC_RELEASE_FIXTURE_DIR/bin/git" <<'EOF'
 #!/bin/bash
 echo 'Git was invoked by the packaged installer' >&2
 exit 97
 EOF
-chmod 700 "$feed/bin/git"
+chmod 700 "$PC_RELEASE_FIXTURE_DIR/bin/git"
 cd "$work/empty"
 python3 "$tools/release-tty.py" "$work/password" bash "$tools/user-install.sh"
 app=/srv/partnerconsole
@@ -34,5 +34,5 @@ curl -fsS http://127.0.0.1:3741/ | grep -F '<title>Partner Console</title>' >/de
 curl -fsS http://127.0.0.1:8741/openapi.json | python3 -c \
   'import sys,json; assert json.load(sys.stdin)["info"]["version"]==sys.argv[1]' "${tag#v}"
 [[ "$(curl -fsS http://127.0.0.1:8741/api/health)" == '{"ok":true}' ]]
-grep -Fxq "https://github.com/MoonlessWanderer/PartnerConsole/releases/download/$tag/partnerconsole-$tag.tar.gz" "$feed/requests"
+grep -Fxq "https://github.com/MoonlessWanderer/PartnerConsole/releases/download/$tag/partnerconsole-$tag.tar.gz" "$PC_RELEASE_FIXTURE_DIR/requests"
 echo "README fresh install, API, sign-in and runtime-only tree passed for $expected"
