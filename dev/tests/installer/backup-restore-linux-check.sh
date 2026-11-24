@@ -74,7 +74,7 @@ trial_left() {
 
 sudo partnerconsole stop || fail 'official Stop'
 purchase_count() {
-  root_sql "SELECT COUNT(*) FROM partnerconsole.wallet_ledger l
+  root_sql "SELECT COUNT(*) FROM partnerconsole.wallet_ledgers l
     JOIN partnerconsole.subscriptions s ON s.id=l.subscription_id
     WHERE s.username='fixture_after_update' AND l.reason='create' AND l.asset='toman' AND l.amount=-5300"
 }
