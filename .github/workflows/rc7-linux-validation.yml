@@ -2,7 +2,7 @@ name: Installer Linux validation
 
 on:
   push:
-    branches: [main, 'release-validation/**']
+    branches: [dev, main]
   pull_request:
     branches: [main]
 

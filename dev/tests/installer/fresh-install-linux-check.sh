@@ -28,6 +28,8 @@ python3 "$tools/release-tty.py" "$work/password" bash "$tools/user-install.sh"
 app=/srv/partnerconsole
 grep -Fx "commit=$expected" "$app/.release/current"
 grep -Fx "tag=$tag" "$app/.release/current"
+read -r archive_sha _ < <(sha256sum "$assets/partnerconsole-$tag.tar.gz")
+grep -Fx "archive=$archive_sha" "$app/.release/current"
 cmp "$assets/partnerconsole.sh" "$app/partnerconsole.sh"
 for excluded in dev tests .github .git; do [[ ! -e "$app/$excluded" ]]; done
 curl -fsS http://127.0.0.1:3741/ | grep -F '<title>Partner Console</title>' >/dev/null

@@ -2,15 +2,19 @@ name: Candidate fresh Ubuntu install
 
 on:
   push:
-    branches: ['release-validation/**']
+    branches: [dev]
   pull_request:
     branches: [main]
   workflow_dispatch:
     inputs:
       version:
-        description: Stable version to build, without publishing
+        description: Stable version to validate, such as v1.0.9
         required: true
-        default: v1.0.9
+        type: string
+      commit:
+        description: Full commit SHA to validate on main
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -25,7 +29,13 @@ jobs:
       - name: Build, audit and checksum the application package
         env:
           RELEASE_VERSION: ${{ inputs.version || 'v1.0.9' }}
+          RELEASE_COMMIT: ${{ inputs.commit }}
         run: |
+          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]] &&
+             [[ "$GITHUB_REF" != refs/heads/main || "$RELEASE_COMMIT" != "$GITHUB_SHA" ]]; then
+            echo "::error::Manual release validation requires main and the full SHA selected for this run."
+            exit 1
+          fi
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           python3 dev/release/build.py "$GITHUB_SHA" "$RELEASE_VERSION" "$RUNNER_TEMP/assets"
           (cd "$RUNNER_TEMP/assets" && sha256sum --check --strict SHA256SUMS)
@@ -68,6 +78,7 @@ jobs:
           sudo rm -rf /etc/mysql /var/lib/mysql /var/log/mysql
       - name: Run README from an empty directory with no source checkout
         run: |
+          (cd "$RUNNER_TEMP/candidate" && sha256sum --check --strict SHA256SUMS)
           sudo PARTNERCONSOLE_DISPOSABLE_HOST=1 bash "$RUNNER_TEMP/harness/fresh-install-linux-check.sh" \
             "$RUNNER_TEMP/candidate" "$GITHUB_SHA"
 
@@ -113,8 +124,9 @@ jobs:
         with:
           name: package-${{ github.sha }}
           path: ${{ runner.temp }}/candidate-a
-      - name: Prepare two consecutive candidate versions
+      - name: Verify the first candidate and build the second version
         run: |
+          (cd "$RUNNER_TEMP/candidate-a" && sha256sum --check --strict SHA256SUMS)
           tag="$(sed -n 's/^RELEASE_TAG="\(.*\)"$/\1/p' "$RUNNER_TEMP/candidate-a/partnerconsole.sh")"
           next="$(python3 -c 'import sys; a,b,c=map(int,sys.argv[1][1:].split(".")); print(f"v{a}.{b}.{c+1}")' "$tag")"
           python3 dev/release/build.py "$GITHUB_SHA" "$next" "$RUNNER_TEMP/candidate-b"

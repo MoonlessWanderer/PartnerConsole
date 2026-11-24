@@ -121,32 +121,51 @@ For manual installations, use `bash scripts/reset-admin-password.sh --confirm-da
 
 Administrator and partner sessions on the same web origin share browser storage. The most recent sign-in replaces the saved session across tabs in the same profile. Use two separate browser profiles to stay signed in to both roles.
 
-## Develop on main and prepare a release
+## Development and release
 
-Development and CI run from main. Publishing is a separate maintainer action
-for a chosen version and full commit SHA. Source, tests and development tools
-stay in Git. The explicit dev/release/runtime-files.txt list controls the
-contents of the customer archive.
+Develop on `dev` and open a pull request from `dev` into `main` for review.
+The financial, fresh install, migration and installer matrix checks run on
+pushes to `dev` and pull requests into `main`. Financial and installer matrix
+checks also run for pushes to `main`. The automatic package uses an internal
+test version. The fresh installer and the first migration both consume the
+same archive from that run. Customer archives contain the files listed in
+`dev/release/runtime-files.txt`; development tools and tests stay in Git.
 
-Run the Candidate fresh Ubuntu install workflow manually on the chosen commit
-with the intended version. Its build job produces partnerconsole.sh,
-partnerconsole-vX.Y.Z.tar.gz and SHA256SUMS. The install job uses those same
-bytes. After the fresh install, migration and installer/financial checks pass,
-download those artifacts. Verify their checksums and confirm the tag will point
-to the tested SHA. Create the tag and a **draft** GitHub Release. Upload all
-three verified assets and check them against SHA256SUMS before publishing as
-stable. A push or merge never publishes a release.
+### Validate and publish a stable release
 
-To reproduce the artifacts locally, from a development checkout run:
+After review and merge, choose the stable version and the full SHA of the
+final commit on `main`. When the merge changes the commit SHA, build and
+verify the assets from the final `main` commit. Run **Candidate fresh Ubuntu
+install** manually on `main` with inputs `version` and `commit`:
+
+```bash
+git fetch origin main
+commit="$(git rev-parse origin/main)"
+gh workflow run fresh-install.yml --ref main -f version=v1.0.9 -f commit="$commit"
+```
+
+Replace the example version with the intended release tag. The workflow
+requires the selected commit to match the run's `main` SHA. It builds
+`partnerconsole.sh`, `partnerconsole-vX.Y.Z.tar.gz` and `SHA256SUMS`, then
+validates those exact files in fresh installation and migration. Confirm
+that the financial checks and installer matrix succeeded for the same SHA.
+
+Download the `package-<commit>` artifact from the successful manual run
+and verify it with `sha256sum --check --strict SHA256SUMS`. The maintainer
+then creates the tag at that exact commit on `main`, creates a draft GitHub
+Release, and attaches the three validated files. Check the attachment hashes
+before explicitly publishing it as stable. Pushes, merges and validation runs
+produce no public release. Installation and updates use stable GitHub Release
+assets.
+
+For a local build from a development checkout, run:
 
 ```bash
 python3 dev/release/build.py "$(git rev-parse HEAD)" v1.0.9 /tmp/partnerconsole-release
 (cd /tmp/partnerconsole-release && sha256sum --check --strict SHA256SUMS)
 ```
 
-Use the exact tested artifacts, or compare every checksum with the tested
-artifacts before uploading a rebuild.
-
+### Local development
 
 Run the backend in one terminal. This example uses PowerShell:
 

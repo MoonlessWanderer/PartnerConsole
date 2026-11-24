@@ -37,7 +37,11 @@ echo 'Git was invoked after the legacy installation' >&2
 exit 97
 EOF
 chmod 700 "$PC_RELEASE_FIXTURE_DIR/bin/git"
-sed -i 's|^PANEL_PRIVATE_ORIGINS=$|PANEL_PRIVATE_ORIGINS=http://127.0.0.1:18788|' "$app/config/api.env"
+grep -Fxq 'PANEL_ENCRYPTION_KEY=' "$app/config/api.env"
+panel_key="$(python3 -c 'import secrets; print(secrets.token_urlsafe(48))')"
+sed -i -e 's|^PANEL_PRIVATE_ORIGINS=$|PANEL_PRIVATE_ORIGINS=http://127.0.0.1:18788|' \
+  -e "s|^PANEL_ENCRYPTION_KEY=$|PANEL_ENCRYPTION_KEY=$panel_key|" "$app/config/api.env"
+unset panel_key
 chown --reference="$app/config/web.env" "$app/config/api.env"
 chmod --reference="$app/config/web.env" "$app/config/api.env"
 sysconfig="$work/config"
@@ -60,10 +64,12 @@ preserved() {
   cmp "$work/before.json" "$work/after.json"
 }
 runtime() {
-  local tag="$1"
+  local tag="$1" assets="$2" archive_sha
   grep -Fxq "tag=$tag" "$app/.release/current"
   grep -Fxq "commit=$expected" "$app/.release/current"
-  cmp "$PC_RELEASE_FIXTURE_DIR/$tag/partnerconsole.sh" "$app/partnerconsole.sh"
+  read -r archive_sha _ < <(sha256sum "$assets/partnerconsole-$tag.tar.gz")
+  grep -Fx "archive=$archive_sha" "$app/.release/current"
+  cmp "$assets/partnerconsole.sh" "$app/partnerconsole.sh"
 }
 publish_fixture "$tag_a"
 old="$app/dev/docs/releases/v1.0.8/RELEASE_NOTES.md"
@@ -79,11 +85,11 @@ preserved
 cp -p "$work/original" "$old"
 printf 'keep personal file\n' > "$app/dev/docs/personal.txt"
 sudo partnerconsole update
-runtime "$tag_a"
+runtime "$tag_a" "$a"
 preserved
 [[ ! -e "$old" && ! -e "$app/dev/v2lab/server.py" && ! -e "$app/.github/workflows/financial-safety.yml" ]]
 grep -Fxq 'keep personal file' "$app/dev/docs/personal.txt"
-echo 'v1.0.8 to A: stopped on local edit; removed unchanged managed development files; preserved personal file, config, wallet, ledger and subscription'
+echo 'v1.0.8 to A: stopped on local edit; removed unchanged managed development files; preserved personal file, config, encryption key, wallet, ledger and subscription'
 publish_fixture "$tag_b"
 archive="$PC_RELEASE_FIXTURE_DIR/$tag_b/partnerconsole-$tag_b.tar.gz"
 mv "$archive" "$work/good.tar.gz"
@@ -92,11 +98,11 @@ printf 'truncated release\n' > "$archive"
 # shellcheck disable=SC2024
 if sudo partnerconsole update > "$work/corrupt.log" 2>&1; then exit 1; fi
 grep -Fq 'Application package checksum mismatch' "$work/corrupt.log"
-runtime "$tag_a"
+runtime "$tag_a" "$a"
 preserved
 mv "$work/good.tar.gz" "$archive"
 sudo partnerconsole update
-runtime "$tag_b"
+runtime "$tag_b" "$b"
 preserved
 cp "$app/runtime/pids/api.id" "$work/api.id"
 cp "$app/runtime/pids/web.id" "$work/web.id"
