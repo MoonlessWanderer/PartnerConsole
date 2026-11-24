@@ -15,12 +15,12 @@ The application uses Next.js 15, React 19, TypeScript, FastAPI, Python, SQLAlche
 
 ## Installation
 
-The application and installer are both **v1.0.6**. Download the installer and checksum file from the [v1.0.6 Release](https://github.com/MoonlessWanderer/PartnerConsole/releases/tag/v1.0.6).
+The application and installer are both **v1.0.7**. Download the installer and checksum file from the [v1.0.7 Release](https://github.com/MoonlessWanderer/PartnerConsole/releases/tag/v1.0.7).
 
 ```bash
 work_dir="$(mktemp -d)"
 cd "$work_dir"
-release_url=https://github.com/MoonlessWanderer/PartnerConsole/releases/download/v1.0.6
+release_url=https://github.com/MoonlessWanderer/PartnerConsole/releases/download/v1.0.7
 curl -fsSLO "$release_url/partnerconsole.sh"
 curl -fsSLO "$release_url/SHA256SUMS"
 sha256sum --check --strict SHA256SUMS
@@ -45,7 +45,7 @@ Use an SSH tunnel to reach the local web and API ports before configuring a publ
 
 ## Installer commands
 
-These commands describe Installer `v1.0.6`.
+These commands describe the installer in this checkout.
 
 | Command | Action |
 | --- | --- |
@@ -55,11 +55,11 @@ These commands describe Installer `v1.0.6`.
 | `sudo partnerconsole restart` | Restart the application |
 | `sudo partnerconsole status` | Check processes and API health |
 | `sudo partnerconsole logs` | Show recent application logs |
-| `sudo partnerconsole update` | Apply the release pinned by the installer being run |
+| `sudo partnerconsole update` | Find and apply the latest stable PartnerConsole release on GitHub |
 | `sudo partnerconsole domain` | Open Domain & SSL in an interactive terminal |
 | `sudo partnerconsole credentials` | Maintain the administrator credentials through an interactive prompt |
 
-### Upgrade an existing v1.0.4 installation
+### Upgrade an existing installation
 
 On the Ubuntu host, stop Partner Console, take a database backup, save protected copies of the application environment files, and start the current installation again.
 
@@ -69,16 +69,19 @@ sudo partnerconsole backup
 sudo partnerconsole start
 ```
 
-Download the installer and checksum for the **target** release into a new directory. Verify the checksum before running Update.
+With release discovery installed, run `sudo partnerconsole update` or choose **5) Update** in the installed menu. The command looks up the official GitHub Latest release. For a newer version, it verifies the downloaded installer's SHA256 against the GitHub release asset digest and checks its pinned tag before running it. When already current, it verifies release integrity and managed files without reinstalling or restarting services. Update refuses an older stable release.
+
+Installers through **v1.0.6** require a one-time manual upgrade to v1.0.7. You can also use a separately downloaded installer to select a particular target release. Download the installer and checksum into a new directory. The following command prompts for the published target tag.
 
 ```bash
 work_dir="$(mktemp -d)"
 cd "$work_dir"
-release_url=https://github.com/MoonlessWanderer/PartnerConsole/releases/download/v1.0.6
-curl -fsSLO "$release_url/partnerconsole.sh"
-curl -fsSLO "$release_url/SHA256SUMS"
-sha256sum --check --strict SHA256SUMS
-sudo bash ./partnerconsole.sh update
+read -rp 'Target release tag: ' tag
+release_url="https://github.com/MoonlessWanderer/PartnerConsole/releases/download/$tag"
+curl -fsSLO "$release_url/partnerconsole.sh" &&
+curl -fsSLO "$release_url/SHA256SUMS" &&
+sha256sum --check --strict SHA256SUMS &&
+sudo bash ./partnerconsole.sh update &&
 sudo partnerconsole status
 ```
 
@@ -176,4 +179,4 @@ Backend and frontend tests live under `dev/tests/`. The simulated V2Board panel 
 
 ## Release notes
 
-See the [Installer v1.0.6 release notes](dev/docs/releases/v1.0.6/RELEASE_NOTES.md) for financial fixes, upgrade instructions, and known limitations.
+See the [Installer v1.0.7 release notes](dev/docs/releases/v1.0.7/RELEASE_NOTES.md) for Update behavior and the one-time upgrade.

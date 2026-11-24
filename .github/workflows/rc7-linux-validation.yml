@@ -44,7 +44,7 @@ jobs:
           sha256sum partnerconsole.sh
       - name: Installer checks
         run: |
-          for check in release-check features-check domain-launcher-check domain-rollback-check domain-acme-check domain-build-env-check; do
+          for check in release-check latest-update-check features-check domain-launcher-check domain-rollback-check domain-acme-check domain-build-env-check; do
             echo "::group::$check"
             bash "dev/tests/installer/$check.sh"
             echo "::endgroup::"
