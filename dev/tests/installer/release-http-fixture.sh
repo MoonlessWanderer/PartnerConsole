@@ -9,6 +9,14 @@ setup_release_feed() {
 set -euo pipefail
 PC_RELEASE_FIXTURE_DIR=/srv/pc-release-fixture
 url="${@: -1}"
+if [[ -f "$PC_RELEASE_FIXTURE_DIR/block-repository" ]]; then
+  case "$url" in
+    https://github.com/MoonlessWanderer/PartnerConsole*|https://api.github.com/repos/MoonlessWanderer/PartnerConsole*|https://codeload.github.com/MoonlessWanderer/PartnerConsole*)
+      printf '%s\n' "$url" >> "$PC_RELEASE_FIXTURE_DIR/blocked-requests"
+      echo "PartnerConsole repository requests are blocked by the test fixture." >&2
+      exit 97 ;;
+  esac
+fi
 case "$url" in
   https://api.github.com/repos/MoonlessWanderer/PartnerConsole/releases/latest)
     file="$PC_RELEASE_FIXTURE_DIR/latest.json" ;;
@@ -32,6 +40,23 @@ EOF
   chmod 440 /etc/sudoers.d/pc-release-fixture
   visudo -c -f /etc/sudoers.d/pc-release-fixture
   export PATH="$PC_RELEASE_FIXTURE_DIR/bin:$PATH"
+}
+block_release_feed() {
+  local url=https://api.github.com/repos/MoonlessWanderer/PartnerConsole/releases/latest
+  touch "$PC_RELEASE_FIXTURE_DIR/block-repository"
+  if sudo curl -fsS -o /dev/null "$url"; then
+    echo 'The archive test could still reach the repository.' >&2
+    return 1
+  fi
+  grep -Fxq "$url" "$PC_RELEASE_FIXTURE_DIR/blocked-requests"
+  : > "$PC_RELEASE_FIXTURE_DIR/blocked-requests"
+}
+archive_test_had_no_requests() {
+  if [[ -s "$PC_RELEASE_FIXTURE_DIR/blocked-requests" ]]; then
+    cat "$PC_RELEASE_FIXTURE_DIR/blocked-requests" >&2
+    return 1
+  fi
+  echo 'No requests to the PartnerConsole repository or release feed were attempted.'
 }
 publish_fixture() {
   local tag="$1"

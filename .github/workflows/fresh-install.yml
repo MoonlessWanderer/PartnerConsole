@@ -62,6 +62,10 @@ jobs:
           if-no-files-found: error
 
   install:
+    strategy:
+      fail-fast: false
+      matrix:
+        source: [online, archive]
     needs: assets
     runs-on: ubuntu-24.04
     timeout-minutes: 25
@@ -79,11 +83,13 @@ jobs:
           sudo systemctl stop mysql || true
           { dpkg-query -W -f '${Package}\n' 'mysql-*' || true; } | xargs -r sudo apt-get purge -y
           sudo rm -rf /etc/mysql /var/lib/mysql /var/log/mysql
-      - name: Run README from an empty directory with no source checkout
+      - name: Install from an empty directory with no source checkout
+        env:
+          INSTALL_SOURCE: ${{ matrix.source }}
         run: |
           (cd "$RUNNER_TEMP/candidate" && sha256sum --check --strict SHA256SUMS)
           sudo PARTNERCONSOLE_DISPOSABLE_HOST=1 bash "$RUNNER_TEMP/harness/fresh-install-linux-check.sh" \
-            "$RUNNER_TEMP/candidate" "$GITHUB_SHA"
+            "$RUNNER_TEMP/candidate" "$GITHUB_SHA" "$INSTALL_SOURCE"
 
   install-recovery:
     strategy:
@@ -140,7 +146,7 @@ jobs:
           sudo rm -rf /etc/mysql /var/lib/mysql /var/log/mysql
       - name: Install the pinned browser driver
         run: npm install --prefix "$RUNNER_TEMP/upgrade-browser" --no-save --package-lock=false --no-audit --no-fund playwright-core@1.56.1
-      - name: Upgrade public v1.0.9 through both candidates, purchase, and restore
+      - name: Upgrade public v1.0.9 locally, test the installed online command, purchase, and restore
         run: |
           sudo PARTNERCONSOLE_DISPOSABLE_HOST=1 BROWSER_USER="$(id -un)" \
             PLAYWRIGHT_MODULE="$RUNNER_TEMP/upgrade-browser/node_modules/playwright-core" \

@@ -65,6 +65,7 @@ cp -r "$a" "$PC_RELEASE_FIXTURE_DIR/$tag_a"
 cp -r "$b" "$PC_RELEASE_FIXTURE_DIR/$tag_b"
 cat > "$PC_RELEASE_FIXTURE_DIR/bin/git" <<'EOF'
 #!/bin/bash
+printf '%s\n' git >> /srv/pc-release-fixture/blocked-requests
 echo 'Git was invoked after the legacy installation' >&2
 exit 97
 EOF
@@ -129,14 +130,21 @@ runtime() {
   version_is "${tag#v}"
 }
 publish_fixture "$tag_a"
+block_release_feed
+update_from_a=(sudo bash "$a/partnerconsole.sh" update --from-archive "$a/partnerconsole-$tag_a.tar.gz")
+cp "$app/.release/current" "$work/public-marker"
+# Use the real, differently versioned candidate B archive with candidate A's installer.
+# Already root on this disposable runner, including the log redirect.
+# shellcheck disable=SC2024
+if sudo bash "$a/partnerconsole.sh" update --from-archive "$b/partnerconsole-$tag_b.tar.gz" > "$work/mismatch.log" 2>&1; then exit 1; fi
+grep -F "Local archive checksum mismatch for $tag_a:" "$work/mismatch.log"
+cmp "$work/public-marker" "$app/.release/current"
+preserved
 old_path=release/v1.0.0/nginx/partnerconsole.conf
 old="$app/$old_path"
 cp -p "$old" "$work/original"
 printf '\n# local edit\n' >> "$old"
-cp "$app/.release/current" "$work/public-marker"
-# Already root on this disposable runner, including the log redirect.
-# shellcheck disable=SC2024
-if sudo partnerconsole update > "$work/edited.log" 2>&1; then exit 1; fi
+if "${update_from_a[@]}" > "$work/edited.log" 2>&1; then exit 1; fi
 grep -Fq 'installed files differ' "$work/edited.log"
 grep -F "$old_path" "$work/edited.log"
 cmp "$work/public-marker" "$app/.release/current"
@@ -153,8 +161,10 @@ personal_unchanged() {
   cmp "$work/personal.conf" "$personal"
   stat -c '%a:%u:%g' "$personal" | cmp "$work/personal-metadata" -
 }
-sudo partnerconsole update
+"${update_from_a[@]}"
 runtime "$tag_a" "$a"
+[[ ! -s "$PC_RELEASE_FIXTURE_DIR/requests" ]]
+archive_test_had_no_requests
 preserved
 for managed in env/backend.env.example env/frontend.env.example nginx/partnerconsole.conf requirements.lock.txt \
                systemd/partnerconsole-api.service systemd/partnerconsole-web.service; do
@@ -167,13 +177,15 @@ grep -Fxq "WorkingDirectory=$app" "$app/deploy/generated/partnerconsole-api.serv
 grep -Fxq "WorkingDirectory=$app" "$app/deploy/generated/partnerconsole-web.service"
 cmp "$app/deploy/nginx/partnerconsole.conf" "$app/deploy/generated/partnerconsole.conf"
 personal_unchanged
-echo 'Public v1.0.9 to A: refused the locally edited managed template, moved managed files, and preserved the personal file, config, key, accounts, wallet, ledger and subscription.'
+echo 'Public v1.0.9 to A via local archive: refused the locally edited managed template, moved managed files, and preserved the personal file, config, key, accounts, wallet, ledger and subscription.'
 touch "$work/browser/updated"
 wait_for_browser complete
 wait "$probe_pid"
 unset probe_pid
 cat "$work/browser.log"
 
+# Check the normal installed online command separately with the next fixture.
+rm -- "$PC_RELEASE_FIXTURE_DIR/block-repository"
 publish_fixture "$tag_b"
 archive="$PC_RELEASE_FIXTURE_DIR/$tag_b/partnerconsole-$tag_b.tar.gz"
 mv "$archive" "$work/good.tar.gz"

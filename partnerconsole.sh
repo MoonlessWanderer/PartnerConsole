@@ -111,12 +111,9 @@ apt_install() {
 }
 
 verify_sha256() {
-  pp_python - "$1" "$2" <<'PY'
-import hashlib, sys
-path, expected = sys.argv[1], sys.argv[2].lower()
-digest = hashlib.sha256(open(path, "rb").read()).hexdigest()
-raise SystemExit(0 if digest == expected else 1)
-PY
+  local sum
+  sum="$(sha256sum < "$1")" || return 1
+  [[ "${sum%% *}" == "${2,,}" ]]
 }
 
 node_ok() {
@@ -237,17 +234,30 @@ assert_package_identity() {
      "$RELEASE_ARCHIVE_SHA256" =~ ^[0-9a-f]{64}$ ]] ||
     die "Use partnerconsole.sh from a published Partner Console release."
 }
+check_local_archive() {
+  local path="$1" source="$2"
+  [[ -f "$path" && -r "$path" ]] || die "Local archive is not a readable regular file: $source"
+  verify_sha256 "$path" "$RELEASE_ARCHIVE_SHA256" ||
+    die "Local archive checksum mismatch for $RELEASE_TAG: $source. Use the archive that matches this installer."
+}
+
 fetch_release_package() (
-  local work installer="$1"
+  local work installer="$1" archive="${2:-}"
   assert_package_identity
   prepare_control_dirs || return 1
   work="$(mktemp -d -- "$APP_ROOT/.release/package.XXXXXXXX")" || return 1
   trap 'rm -rf -- "$work"' EXIT
-  download_release_file -o "$work/package.tar.gz" \
-    "$OFFICIAL_RELEASES/download/$RELEASE_TAG/partnerconsole-$RELEASE_TAG.tar.gz" ||
-    die "Could not download the $RELEASE_TAG application package."
-  verify_sha256 "$work/package.tar.gz" "$RELEASE_ARCHIVE_SHA256" ||
-    die "Application package checksum mismatch for $RELEASE_TAG."
+  if [[ -n "$archive" ]]; then
+    [[ -f "$archive" && -r "$archive" ]] || die "Local archive is not a readable regular file: $archive"
+    cp -- "$archive" "$work/package.tar.gz" || die "Could not copy the local archive: $archive"
+    check_local_archive "$work/package.tar.gz" "$archive"
+  else
+    download_release_file -o "$work/package.tar.gz" \
+      "$OFFICIAL_RELEASES/download/$RELEASE_TAG/partnerconsole-$RELEASE_TAG.tar.gz" ||
+      die "Could not download the $RELEASE_TAG application package."
+    verify_sha256 "$work/package.tar.gz" "$RELEASE_ARCHIVE_SHA256" ||
+      die "Application package checksum mismatch for $RELEASE_TAG."
+  fi
   mkdir "$work/unpacked" || return 1
   pp_python - "$work/package.tar.gz" "$work/unpacked" "$RELEASE_TAG" "$RELEASE_SOURCE_COMMIT" <<'PY' || return 1
 import json
@@ -1158,7 +1168,7 @@ PY
 }
 
 setup_app() (
-  local install_lock ready=0
+  local install_lock ready=0 archive="${1:-}"
   assert_package_identity
   [[ ! -L "$APP_ROOT" ]] || die "Refusing a symbolic link at the install path."
   ensure_install_directory
@@ -1174,7 +1184,7 @@ setup_app() (
   else
     install_deps
     ensure_user
-    fetch_release_package "${BASH_SOURCE[0]}" || return 1
+    fetch_release_package "${BASH_SOURCE[0]}" "$archive" || return 1
     if [[ -f "$APP_ROOT/config/api.env" ]]; then
       log "The existing configuration was kept."
     else
@@ -1216,7 +1226,7 @@ setup_app() (
 
 update_app() {
   [[ -f "$APP_ROOT/config/api.env" ]] || die "Install Partner Console before updating it."
-  local commit="$RELEASE_SOURCE_COMMIT" service_state=0
+  local commit="$RELEASE_SOURCE_COMMIT" service_state=0 archive="${1:-}"
   if [[ -f "$APP_ROOT/.release/current" ]] && grep -Fxq "tag=$RELEASE_TAG" "$APP_ROOT/.release/current"; then
     reject_local_changes "$(current_commit || true)" "$commit"
     release_already_current "$commit" ||
@@ -1225,7 +1235,7 @@ update_app() {
     return 0
   fi
   reject_local_changes "$(current_commit || true)" "$commit"
-  fetch_release_package "${BASH_SOURCE[0]}" || return 1
+  fetch_release_package "${BASH_SOURCE[0]}" "$archive" || return 1
   app_running "$APP_ROOT/.release/incoming/scripts/common.sh" || service_state=$?
   [[ "$service_state" -lt 2 ]] || die "Cannot verify the application processes and ports. Update stopped."
   ensure_user
@@ -1266,14 +1276,14 @@ apply_pinned_update() (
     fi
   fi
   # Keep the lock in this process only. Restarted services must not inherit it.
-  ( update_app ) {update_lock}<&-
+  ( update_app "$@" ) {update_lock}<&-
 )
 
 update_command() (
   [[ -f "$APP_ROOT/config/api.env" ]] || die "Install Partner Console before updating it."
-  if [[ ! "${BASH_SOURCE[0]}" -ef "$APP_ROOT/partnerconsole.sh" ]]; then
-    # A separately downloaded installer is an explicit choice of target release.
-    apply_pinned_update
+  if [[ -n "${1:-}" || ! "${BASH_SOURCE[0]}" -ef "$APP_ROOT/partnerconsole.sh" ]]; then
+    # An archive or a separately downloaded installer selects a pinned release.
+    apply_pinned_update "$@"
     return
   fi
 
@@ -1474,12 +1484,21 @@ credentials_app() (
 )
 
 run_choice() {
-  case "$1" in
-    install) setup_app ;;
+  local command="$1" archive=""
+  shift
+  if [[ "$command" == install || "$command" == update ]] && (( $# )); then
+    [[ $# == 2 && "$1" == --from-archive && -n "${2:-}" ]] ||
+      die "Usage: sudo bash ./partnerconsole.sh $command [--from-archive PATH]"
+    archive="$2"
+    assert_package_identity
+    check_local_archive "$archive" "$archive"
+  fi
+  case "$command" in
+    install) setup_app "$archive" ;;
     start) start_app ;;
     stop) stop_app ;;
     restart) restart_app ;;
-    update) update_command ;;
+    update) update_command "$archive" ;;
     status) status_app ;;
     logs) logs_app ;;
     backup) backup_app ;;
@@ -1538,6 +1557,7 @@ usage() {
   cat <<EOF
 sudo partnerconsole
 sudo partnerconsole install|start|stop|restart|update|status|logs|backup|domain|credentials
+sudo bash ./partnerconsole.sh install|update --from-archive PATH
 EOF
 }
 
@@ -1553,7 +1573,7 @@ if [[ "${PARTNERCONSOLE_LIBRARY:-}" != "1" ]]; then
   fi
   case "${1:-menu}" in
     menu) menu_loop ;;
-    install|start|stop|restart|update|status|logs|backup|domain|credentials) run_choice "$1" ;;
+    install|start|stop|restart|update|status|logs|backup|domain|credentials) run_choice "$@" ;;
     *) usage; exit 2 ;;
   esac
 fi
