@@ -80,6 +80,8 @@ Starting with the next release after `v1.0.9`, the oldest supported upgrade sour
 
 A fresh installation renders optional Nginx and systemd templates in `deploy/generated/`. To render them after an upgrade, run `sudo bash scripts/render-host-templates.sh ppv1` from the installation root. Files previously generated or added by the operator in `release/v1.0.0/generated/` stay in place.
 
+The configuration examples are `config/api.env.example` and `config/web.env.example`. The installer preserves existing `config/api.env` and `config/web.env` files during upgrades.
+
 You can also download an installer and checksum to select a particular published target release. Run the following commands in a new directory.
 
 ```bash
