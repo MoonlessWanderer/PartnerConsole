@@ -8,6 +8,10 @@ tools="$(cd "$(dirname "$0")" && pwd)"
 repo="$(cd "$tools/../../.." && pwd)"
 a="$(realpath "$1")"
 b="$(realpath "$2")"
+tag_a="$(sed -n 's/^RELEASE_TAG="\(.*\)"$/\1/p' "$a/partnerconsole.sh")"
+tag_b="$(sed -n 's/^RELEASE_TAG="\(.*\)"$/\1/p' "$b/partnerconsole.sh")"
+dpkg --compare-versions "${tag_a#v}" gt 1.0.8
+dpkg --compare-versions "${tag_b#v}" gt "${tag_a#v}"
 expected="$(git -c safe.directory="$repo" -C "$repo" rev-parse HEAD)"
 app=/srv/partnerconsole
 [[ ! -e "$app" && ! -e /usr/local/bin/partnerconsole ]]
@@ -25,8 +29,8 @@ grep -Fxq 'commit=154fb568d79a95dd9d85076f0a310e3bf0b55497' "$app/.release/curre
 # shellcheck source=/dev/null
 source "$tools/release-http-fixture.sh"
 setup_release_feed
-cp -r "$a" "$PC_RELEASE_FIXTURE_DIR/v1.0.9"
-cp -r "$b" "$PC_RELEASE_FIXTURE_DIR/v1.0.10"
+cp -r "$a" "$PC_RELEASE_FIXTURE_DIR/$tag_a"
+cp -r "$b" "$PC_RELEASE_FIXTURE_DIR/$tag_b"
 cat > "$PC_RELEASE_FIXTURE_DIR/bin/git" <<'EOF'
 #!/bin/bash
 echo 'Git was invoked after the legacy installation' >&2
@@ -61,7 +65,7 @@ runtime() {
   grep -Fxq "commit=$expected" "$app/.release/current"
   cmp "$PC_RELEASE_FIXTURE_DIR/$tag/partnerconsole.sh" "$app/partnerconsole.sh"
 }
-publish_fixture v1.0.9
+publish_fixture "$tag_a"
 old="$app/dev/docs/releases/v1.0.8/RELEASE_NOTES.md"
 cp -p "$old" "$work/original"
 printf 'local edit\n' >> "$old"
@@ -75,24 +79,24 @@ preserved
 cp -p "$work/original" "$old"
 printf 'keep personal file\n' > "$app/dev/docs/personal.txt"
 sudo partnerconsole update
-runtime v1.0.9
+runtime "$tag_a"
 preserved
 [[ ! -e "$old" && ! -e "$app/dev/v2lab/server.py" && ! -e "$app/.github/workflows/financial-safety.yml" ]]
 grep -Fxq 'keep personal file' "$app/dev/docs/personal.txt"
 echo 'v1.0.8 to A: stopped on local edit; removed unchanged managed development files; preserved personal file, config, wallet, ledger and subscription'
-publish_fixture v1.0.10
-archive="$PC_RELEASE_FIXTURE_DIR/v1.0.10/partnerconsole-v1.0.10.tar.gz"
+publish_fixture "$tag_b"
+archive="$PC_RELEASE_FIXTURE_DIR/$tag_b/partnerconsole-$tag_b.tar.gz"
 mv "$archive" "$work/good.tar.gz"
 printf 'truncated release\n' > "$archive"
 # Already root on this disposable runner, including the log redirect.
 # shellcheck disable=SC2024
 if sudo partnerconsole update > "$work/corrupt.log" 2>&1; then exit 1; fi
 grep -Fq 'Application package checksum mismatch' "$work/corrupt.log"
-runtime v1.0.9
+runtime "$tag_a"
 preserved
 mv "$work/good.tar.gz" "$archive"
 sudo partnerconsole update
-runtime v1.0.10
+runtime "$tag_b"
 preserved
 cp "$app/runtime/pids/api.id" "$work/api.id"
 cp "$app/runtime/pids/web.id" "$work/web.id"

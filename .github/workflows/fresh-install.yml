@@ -80,17 +80,15 @@ jobs:
         with:
           persist-credentials: false
       - name: Obtain the exact package used by fresh install
-        if: inputs.version == '' || inputs.version == 'v1.0.9'
         uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53
         with:
           name: package-${{ github.sha }}
           path: ${{ runner.temp }}/candidate-a
       - name: Prepare two consecutive candidate versions
         run: |
-          if [[ ! -d "$RUNNER_TEMP/candidate-a" ]]; then
-            python3 dev/release/build.py "$GITHUB_SHA" v1.0.9 "$RUNNER_TEMP/candidate-a"
-          fi
-          python3 dev/release/build.py "$GITHUB_SHA" v1.0.10 "$RUNNER_TEMP/candidate-b"
+          tag="$(sed -n 's/^RELEASE_TAG="\(.*\)"$/\1/p' "$RUNNER_TEMP/candidate-a/partnerconsole.sh")"
+          next="$(python3 -c 'import sys; a,b,c=map(int,sys.argv[1][1:].split(".")); print(f"v{a}.{b}.{c+1}")' "$tag")"
+          python3 dev/release/build.py "$GITHUB_SHA" "$next" "$RUNNER_TEMP/candidate-b"
       - name: Remove the disposable runner's existing MySQL packages
         run: |
           sudo systemctl stop mysql || true

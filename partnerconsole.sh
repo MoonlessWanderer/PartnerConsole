@@ -300,7 +300,7 @@ PY
 sync_release() {
   local mode="$1" source="$2" dest="$3"
   pp_python - "$mode" "$source" "$dest" <<'PY'
-import hashlib, os, shutil, sys
+import hashlib, os, shutil, sys, tempfile
 from pathlib import Path
 mode, source, dest = sys.argv[1:]
 source, dest = Path(source).resolve(), Path(dest).resolve()
@@ -377,7 +377,16 @@ def copy_file(rel: str, src_root: Path, dst_root: Path):
     if not src.is_file():
         raise SystemExit(f"Release entry is not a file: {rel}")
     dst.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(src, dst)
+    # The old installer may still be reading this file when Update returns.
+    # Keep its open inode intact until it finishes.
+    fd, filename = tempfile.mkstemp(prefix=".pc-release-", dir=dst.parent)
+    os.close(fd)
+    temp = Path(filename)
+    try:
+        shutil.copy2(src, temp)
+        temp.replace(dst)
+    finally:
+        temp.unlink(missing_ok=True)
 
 manifest = dest / ".release" / "managed.txt"
 if mode == "snapshot":
