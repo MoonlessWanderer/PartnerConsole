@@ -2,43 +2,98 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { api } from "@/lib/api";
+import { Banner } from "@/components/ui";
+import { api, ApiError } from "@/lib/api";
 import { formatDays, formatGb, formatInt, formatToman } from "@/lib/format";
-import { Product } from "@/lib/types";
-import { Card } from "@/components/ui";
+import type { Product } from "@/lib/types";
+import styles from "./dashboard.module.css";
+
+type DashboardResponse = {
+  balance_toman: number;
+  subscription_count: number;
+  credits: Product[];
+};
+
+function ProductCard({ product }: { product: Product }) {
+  const metrics = [
+    ["اعتبار حجم", formatGb(product.credit_gb)],
+    ["اعتبار روز", formatDays(product.credit_days)],
+    ["نرخ هر گیگابایت", formatToman(product.price_per_gb)],
+    ["نرخ هر روز", formatToman(product.price_per_day)],
+  ];
+
+  return (
+    <article className={styles.product}>
+      <header className={styles.productHeader}>
+        <h3><bdi>{product.name}</bdi></h3>
+        <span className={product.active ? styles.activeStatus : styles.inactiveStatus}>
+          {product.active ? "قابل انتخاب برای ساخت" : "ساخت اشتراک جدید غیرفعال است"}
+        </span>
+      </header>
+      <dl className={styles.productMetrics}>
+        {metrics.map(([label, value]) => (
+          <div key={label} className={styles.productMetric}>
+            <dt>{label}</dt>
+            <dd>{value}</dd>
+          </div>
+        ))}
+      </dl>
+    </article>
+  );
+}
 
 export default function PartnerHome() {
-  const [data, setData] = useState<{ balance_toman: number; subscription_count: number; credits: Product[] } | null>(null);
+  const [data, setData] = useState<DashboardResponse | null>(null);
   const [error, setError] = useState("");
+
   useEffect(() => {
-    api<{ balance_toman: number; subscription_count: number; credits: Product[] }>("/partner/dashboard")
-      .then(setData)
-      .catch((err) => setError(err.message));
+    let active = true;
+    api<DashboardResponse>("/partner/dashboard")
+      .then((result) => {
+        if (active) setData(result);
+      })
+      .catch((err: unknown) => {
+        if (active) {
+          setError(err instanceof ApiError && err.message.trim()
+            ? err.message
+            : "بارگیری اطلاعات داشبورد انجام نشد. دوباره تلاش کنید.");
+        }
+      });
+
+    return () => {
+      active = false;
+    };
   }, []);
+
+  if (error) return <Banner>{error}</Banner>;
+  if (!data) return <p className={styles.status} role="status">در حال بارگیری داشبورد…</p>;
+
   return (
-    <div className="space-y-4">
-      {error ? <p className="text-red-700">{error}</p> : null}
-      <div className="grid gap-3 sm:grid-cols-2">
-        <Card>
-          <div className="text-sm text-slate-500">موجودی تومان</div>
-          <div className="mt-2 text-2xl font-bold">{data ? formatToman(data.balance_toman) : "…"}</div>
-        </Card>
-        <Card>
-          <div className="text-sm text-slate-500">تعداد اشتراک</div>
-          <div className="mt-2 text-2xl font-bold">{data ? formatInt(data.subscription_count) : "…"}</div>
-          <Link href="/partner/subscriptions/new" className="mt-3 inline-flex min-h-11 items-center text-sm text-brand">ساخت اشتراک</Link>
-        </Card>
-      </div>
-      <div className="grid gap-3 md:grid-cols-2">
-        {(data?.credits || []).map((product) => (
-          <Card key={product.id}>
-            <div className="font-bold">{product.name}</div>
-            <div className="mt-1 text-sm text-slate-500">{product.active ? "فعال برای ساخت" : "فقط مدیریت قبلی"}</div>
-            <div className="mt-2 text-sm">اعتبار {formatGb(product.credit_gb)} · {formatDays(product.credit_days)}</div>
-            <div className="text-sm text-slate-500">نرخ {formatToman(product.price_per_gb)} و {formatToman(product.price_per_day)}</div>
-          </Card>
-        ))}
-      </div>
-    </div>
+    <>
+      <section className={styles.summary} aria-label="خلاصهٔ حساب">
+        <div className={styles.wallet}>
+          <p className={styles.summaryLabel}>موجودی کیف پول</p>
+          <p className={styles.summaryValue}>{formatToman(data.balance_toman)}</p>
+        </div>
+        <Link href="/partner/subscriptions" className={styles.subscriptions}>
+          <div>
+            <p className={styles.summaryLabel}>تعداد اشتراک</p>
+            <p className={styles.summaryValue}>{formatInt(data.subscription_count)}</p>
+          </div>
+          <span aria-hidden="true" className={styles.arrow}>←</span>
+        </Link>
+      </section>
+
+      <section className={styles.products} aria-labelledby="dashboard-products">
+        <h2 id="dashboard-products">اعتبار و نرخ محصولات</h2>
+        {data.credits.length ? (
+          <div className={styles.productGrid}>
+            {data.credits.map((product) => <ProductCard key={product.id} product={product} />)}
+          </div>
+        ) : (
+          <p className={styles.status}>محصولی برای نمایش وجود ندارد.</p>
+        )}
+      </section>
+    </>
   );
 }

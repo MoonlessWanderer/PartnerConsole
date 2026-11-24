@@ -2,7 +2,7 @@ name: Installer Linux validation
 
 on:
   push:
-    branches: [main, 'release-validation/**']
+    branches: [dev, main]
   pull_request:
     branches: [main]
 
@@ -36,12 +36,8 @@ jobs:
       - name: Verify checkout and installer pin
         run: |
           test -z "$(git status --porcelain)"
-          PARTNERCONSOLE_LIBRARY=1 source ./partnerconsole.sh
-          if git show-ref --verify --quiet "refs/tags/$RELEASE_TAG" &&
-             [[ "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" == "$(git rev-parse HEAD)" ]]; then
-            test "$(tree_sha256 "$GITHUB_WORKSPACE")" = "$RELEASE_TREE_SHA256"
-          fi
-          sha256sum partnerconsole.sh
+          python3 dev/release/build.py "$GITHUB_SHA" v1.0.9 "$RUNNER_TEMP/candidate"
+          (cd "$RUNNER_TEMP/candidate" && sha256sum --check --strict SHA256SUMS)
       - name: Installer checks
         run: |
           for check in release-check latest-update-check features-check domain-launcher-check domain-rollback-check domain-acme-check domain-build-env-check; do
@@ -219,9 +215,9 @@ jobs:
           sudo rm -rf /etc/mysql /var/lib/mysql /var/log/mysql
           sudo apt-get update
           sudo apt-get install -y python3-venv build-essential pkg-config xz-utils iproute2
-      - name: Local copy of the release tag
+      - name: Build release assets from this SHA
         run: |
-          sudo bash dev/tests/installer/prepare-candidate-origin.sh "$GITHUB_WORKSPACE" /srv/pc-release-origin.git
+          python3 dev/release/build.py "$GITHUB_SHA" v1.0.9 "$RUNNER_TEMP/candidate"
       - name: Install the pinned browser driver
         if: matrix.baseline != 'v1.0.3-rc.6'
         run: npm install --prefix "$RUNNER_TEMP/upgrade-browser" --no-save --package-lock=false --no-audit --no-fund playwright-core@1.56.1
@@ -229,6 +225,6 @@ jobs:
         env:
           INSTALL_BASELINE: ${{ matrix.baseline }}
         run: |
-          sudo PARTNERCONSOLE_DISPOSABLE_HOST=1 RELEASE_ORIGIN=/srv/pc-release-origin.git BROWSER_USER="$(id -un)" \
+          sudo PARTNERCONSOLE_DISPOSABLE_HOST=1 RELEASE_ASSETS="$RUNNER_TEMP/candidate" BROWSER_USER="$(id -un)" \
             INSTALL_BASELINE="$INSTALL_BASELINE" PLAYWRIGHT_MODULE="$RUNNER_TEMP/upgrade-browser/node_modules/playwright-core" \
             bash dev/tests/installer/install-update-restore-linux-check.sh

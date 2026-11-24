@@ -29,54 +29,15 @@ ok "install path"
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
-export GIT_CONFIG_GLOBAL=/dev/null
-export GIT_CONFIG_NOSYSTEM=1
-export GIT_CONFIG_SYSTEM=/dev/null
-origin="$work/origin"
-view="$work/tag-view"
 install="$work/install"
-mkdir -p "$origin/backend" "$view" "$install"
-
-git -C "$origin" init -q
-printf 'version = "%s"\n' "$APP_VERSION" > "$origin/backend/pyproject.toml"
-printf 'RELEASE_TREE_SHA256=""\nkeep=tag\n' > "$origin/partnerconsole.sh"
-printf 'old\n' > "$origin/app.txt"
-git -C "$origin" add .
-git -C "$origin" -c user.email=test@example.com -c user.name=test commit -qm "release"
-git -C "$origin" tag "$RELEASE_TAG"
-printf 'new\n' > "$origin/app.txt"
-git -C "$origin" -c user.email=test@example.com -c user.name=test commit -qam "main"
-
-git -C "$view" init -q
-git -C "$view" -c protocol.file.allow=always fetch --depth 1 "$origin" tag "$RELEASE_TAG"
-git -C "$view" checkout -q --detach FETCH_HEAD
-RELEASE_TREE_SHA256="$(tree_sha256 "$view")"
-[[ "$RELEASE_TREE_SHA256" =~ ^[0-9a-f]{64}$ ]] || fail "tree hash was not created"
-printf 'changed\n' >> "$view/app.txt"
-[[ "$(tree_sha256 "$view")" != "$RELEASE_TREE_SHA256" ]] || fail "a changed file kept the same hash"
-git -C "$view" checkout -q -- app.txt
-ok "release hash"
-
+mkdir -p "$install/.release/incoming"
 APP_ROOT="$install"
-fetch_git_tag "$origin" "$APP_ROOT/.release/incoming" "$RELEASE_TAG" >/dev/null
-grep -q '^old$' "$APP_ROOT/.release/incoming/app.txt" || fail "the tag checkout was not used"
-if grep -q '^new$' "$APP_ROOT/.release/incoming/app.txt"; then
-  fail "main was checked out"
-fi
-ok "fetch tag"
-
-saved="$RELEASE_TREE_SHA256"
-RELEASE_TREE_SHA256="0000000000000000000000000000000000000000000000000000000000000000"
-if ( fetch_git_tag "$origin" "$APP_ROOT/.release/incoming" "$RELEASE_TAG" >/dev/null ); then
-  fail "a bad integrity pin was accepted"
-fi
-RELEASE_TREE_SHA256="$saved"
-ok "bad pin rejected"
-
+printf 'old\n' > "$APP_ROOT/.release/incoming/app.txt"
 mkdir -p "$install/config" "$install/data"
 printf 'secret-marker\n' > "$install/config/api.env"
 printf 'userdata\n' > "$install/data/keep"
 printf 'previous\n' > "$install/app.txt"
+printf 'app.txt\n' > "$install/.release/managed.txt"
 mkdir -p "$APP_ROOT/.release/incoming/config"
 printf 'LEAK\n' > "$APP_ROOT/.release/incoming/config/api.env"
 snapshot_release "$APP_ROOT/.release/previous"
@@ -274,6 +235,7 @@ if [[ -e "$install/.release/previous/backend/.venv/bin/python" ]]; then
 fi
 mkdir -p "$work/outside"
 printf 'outside\n' > "$work/outside/marker"
+printf 'app.txt\nescape.link\n' > "$install/.release/managed.txt"
 ln -s ../outside/marker "$install/escape.link" || fail "could not create a symlink for the snapshot test"
 if pp_python - "$install/escape.link" <<'PY'
 import sys
@@ -289,6 +251,7 @@ else
   echo "SYMLINK_ESCAPE_NOT_TESTED"
 fi
 rm -f "$install/escape.link"
+printf 'app.txt\n' > "$install/.release/managed.txt"
 ok "snapshot skips the virtualenv"
 
 before="$(stat -c '%u:%g:%a' "$install")"
@@ -299,7 +262,7 @@ after="$(stat -c '%u:%g:%a' "$install")"
 grep -q 'keep-owner' "$install/owner-marker" || fail "an existing install directory was replaced"
 ok "existing install ownership"
 
-printf 'tag=%s\ncommit=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\ntree=pin\n' "$RELEASE_TAG" > "$install/.release/current"
+printf 'tag=%s\ncommit=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\narchive=%s\n' "$RELEASE_TAG" "$RELEASE_ARCHIVE_SHA256" > "$install/.release/current"
 release_already_current aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa || fail "an unchanged release was not a no-op"
 printf 'edited\n' >> "$install/app.txt"
 if release_already_current aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; then

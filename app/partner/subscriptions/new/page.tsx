@@ -1,138 +1,242 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { JalaliDateField } from "@/components/JalaliDateField";
-import { QuoteBox } from "@/components/QuoteBox";
-import { Banner, Button, Field, inputClass } from "@/components/ui";
+import { PurchaseWalletBreakdown } from "@/components/PurchaseWalletBreakdown";
+import { Banner } from "@/components/ui";
+import styles from "@/components/SubscriptionPurchase.module.css";
 import { api, ApiError, sessionToken } from "@/lib/api";
-import { faDigits, formatDays, formatGb, formatToman } from "@/lib/format";
-import { addJalaliDays, todayJalali } from "@/lib/jalali";
-import { Product, Quote } from "@/lib/types";
+import { formatDate, formatDays, formatGb, formatToman } from "@/lib/format";
+import { addJalaliDays, parseJalali, todayJalali } from "@/lib/jalali";
+import type { Product, Quote } from "@/lib/types";
+
+type PurchaseQuote = Quote & { gb_cost_toman: number; days_cost_toman: number };
+
+const usernamePattern = "[A-Za-z0-9_]{3,32}";
+const validUsername = new RegExp(`^${usernamePattern}$`);
 
 export default function NewSubscriptionPage() {
   const router = useRouter();
   const [reviewSession] = useState(sessionToken);
+  const [today] = useState(todayJalali);
+  const [products, setProducts] = useState<Product[] | null>(null);
+  const [draft, setDraft] = useState({ product_id: 0, username: "", traffic_cap_gb: "10", end_date: "", note: "" });
+  const [calendarOpen, setCalendarOpen] = useState(false);
   const [quoteVersion, setQuoteVersion] = useState(0);
-  const [products, setProducts] = useState<Product[]>([]);
-  const [productId, setProductId] = useState(0);
-  const [username, setUsername] = useState("");
-  const [gb, setGb] = useState("10");
-  const [end, setEnd] = useState("");
-  const [note, setNote] = useState("");
-  const [quote, setQuote] = useState<Quote | null>(null);
-  const [quoteError, setQuoteError] = useState("");
   const [error, setError] = useState("");
+  const [reprice, setReprice] = useState("");
+  const [followUp, setFollowUp] = useState("");
   const [pending, setPending] = useState(false);
-  const today = useMemo(() => todayJalali(), []);
-  const product = products.find((item) => item.id === productId);
+  const submitting = useRef(false);
+  const dateControl = useRef<HTMLButtonElement>(null);
+
+  const request = useMemo(() => ({ draft, version: quoteVersion }), [draft, quoteVersion]);
+  const [review, setReview] = useState<{ request: typeof request; quote?: PurchaseQuote; error?: string } | null>(null);
+  const quote = review?.request === request ? review.quote : undefined;
+  const quoteError = review?.request === request ? review.error : undefined;
+  const product = products?.find((item) => item.id === draft.product_id);
+  const volume = Number(draft.traffic_cap_gb);
+  const canQuote = !!product && validUsername.test(draft.username) && Number.isInteger(volume) &&
+    volume >= 1 && volume <= 1_000_000 && !!parseJalali(draft.end_date) && draft.end_date > today;
+  const inputsLocked = pending || Boolean(followUp);
 
   useEffect(() => {
-    api<{ items: Product[] }>("/partner/products").then((data) => {
+    let current = true;
+    api<{ items: Product[] }>("/partner/products", { reviewSession }).then((data) => {
+      if (!current) return;
       const active = data.items.filter((item) => item.active);
       setProducts(active);
-      if (active[0]) setProductId(active[0].id);
-    }).catch((err) => setError(err.message));
-  }, []);
+      if (active[0]) setDraft((old) => ({ ...old, product_id: active[0].id }));
+    }).catch((err) => {
+      if (current) setError(err.message);
+    });
+    return () => { current = false; };
+  }, [reviewSession]);
 
   useEffect(() => {
-    setQuote(null);
-    setQuoteError("");
-    if (!productId || !gb || !end || !/^[a-zA-Z0-9_]{3,32}$/.test(username)) return;
-    let cancelled = false;
-    const handle = setTimeout(() => {
-      api<Quote>("/partner/subscriptions/quote", {
+    if (!canQuote) return;
+    let current = true;
+    const timer = window.setTimeout(() => {
+      api<PurchaseQuote>("/partner/subscriptions/quote", {
         method: "POST",
         reviewSession,
-        body: { action: "create", product_id: productId, traffic_cap_gb: gb, end_date: end, username, note },
+        body: { action: "create", ...request.draft },
       }).then((data) => {
-        if (cancelled) return;
-        setProducts((items) => items.map((item) => item.id === productId
-          ? { ...item, credit_gb: data.credit_gb, credit_days: data.credit_days }
-          : item));
-        setQuote(data);
+        if (!current) return;
+        setProducts((items) => items?.map((item) => item.id === request.draft.product_id
+          ? { ...item, credit_gb: data.credit_gb, credit_days: data.credit_days,
+            price_per_gb: data.price_per_gb, price_per_day: data.price_per_day }
+          : item) ?? null);
+        setReview({ request, quote: data });
       }).catch((err) => {
-        if (!cancelled) {
-          setQuote(null);
-          setQuoteError(err.message);
-        }
+        if (current) setReview({ request, error: err.message });
       });
     }, 250);
     return () => {
-      cancelled = true;
-      clearTimeout(handle);
+      current = false;
+      window.clearTimeout(timer);
     };
-  }, [productId, gb, end, username, note, reviewSession, quoteVersion]);
+  }, [canQuote, request, reviewSession]);
 
-  async function submit(event: FormEvent) {
+  function change<K extends keyof typeof draft>(key: K, value: (typeof draft)[K]) {
+    setDraft((old) => ({ ...old, [key]: value }));
+    setError("");
+    setReprice("");
+  }
+
+  function chooseEnd(value: string) {
+    change("end_date", value);
+    setCalendarOpen(false);
+  }
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (pending || !quote?.consent_token) return;
+    if (submitting.current || !quote?.affordable || !quote.consent_token || sessionToken() !== reviewSession) return;
+    submitting.current = true;
     setPending(true);
     setError("");
     try {
       const created = await api<{ id: number }>("/partner/subscriptions", {
         method: "POST",
         reviewSession,
-        body: { product_id: productId, username, traffic_cap_gb: gb, end_date: end, note: note || null, consent_token: quote.consent_token },
+        body: { ...request.draft, note: request.draft.note || null, consent_token: quote.consent_token },
       });
       router.replace(`/partner/subscriptions/${created.id}`);
+      return;
     } catch (err) {
       if (err instanceof ApiError && err.code === "financial_consent") {
-        setQuote(null);
+        setFollowUp("");
+        setReprice(err.message);
+        setReview(null);
         setQuoteVersion((version) => version + 1);
+      } else if (err instanceof ApiError && (err.code === "operation_status" || err.status === 0)) {
+        setFollowUp(err.message);
+      } else {
+        setError(err instanceof Error ? err.message : "ساخت ناموفق بود");
       }
-      setError(err instanceof Error ? err.message : "ساخت ناموفق بود");
-    } finally {
+      submitting.current = false;
       setPending(false);
     }
   }
 
   return (
-    <form onSubmit={submit} className="grid gap-4 lg:grid-cols-[1fr_320px]">
-      <div className="space-y-4 rounded-2xl bg-white p-4 pb-36 lg:pb-4">
-        <h2 className="text-lg font-bold">ساخت اشتراک</h2>
-        {error ? <Banner>{error}</Banner> : null}
-        <Field label="محصول">
-          <select className={inputClass} value={productId} onChange={(e) => setProductId(Number(e.target.value))}>
-            {products.map((item) => (
-              <option key={item.id} value={item.id}>
-                {item.name} — اعتبار {formatGb(item.credit_gb)} / {formatDays(item.credit_days)}
-              </option>
-            ))}
-          </select>
-        </Field>
-        {product ? (
-          <p className="text-sm text-slate-600">
-            نرخ {formatToman(product.price_per_gb)} برای هر گیگ و {formatToman(product.price_per_day)} برای هر روز.
-            اول اعتبار همین محصول مصرف می‌شود.
-          </p>
-        ) : <p className="text-sm">محصول فعالی نیست.</p>}
-        <Field label="نام کاربری (a-z، عدد، _)">
-          <input className={inputClass} value={username} onChange={(e) => setUsername(e.target.value)} required pattern="[A-Za-z0-9_]{3,32}" />
-        </Field>
-        <Field label="حجم (گیگ)">
-          <input className={inputClass} type="number" min={1} step="1" value={gb} onChange={(e) => setGb(e.target.value)} required />
-        </Field>
-        <Field label="تاریخ پایان">
-          <div className="mb-2 flex flex-wrap gap-2">
-            {[31, 62, 93].map((days) => (
-              <Button key={days} tone="soft" onClick={() => setEnd(addJalaliDays(today, days))}>+{faDigits(days)} روز</Button>
-            ))}
+    <div className={styles.page}>
+      <Link href="/partner/subscriptions" prefetch={false} className={styles.back} aria-label="بازگشت به اشتراک‌ها">
+        <span dir="ltr" aria-hidden="true">→</span> اشتراک‌ها
+      </Link>
+      <form className={styles.layout} onSubmit={submit}>
+        <section className={styles.card} aria-labelledby="purchase-fields">
+          <h2 id="purchase-fields">مشخصات اشتراک</h2>
+          {products === null && !error && <p className={styles.empty} role="status">در حال بارگیری محصولات…</p>}
+          {products?.length === 0 && <p className={styles.empty}>محصول فعالی برای ساخت اشتراک وجود ندارد.</p>}
+          <fieldset className={styles.fieldset} disabled={inputsLocked || !products?.length}>
+            <div className={styles.field}>
+              <label htmlFor="purchase-product">محصول</label>
+              <select id="purchase-product" value={draft.product_id} onChange={(event) => change("product_id", Number(event.target.value))}>
+                {products?.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.name} — اعتبار {formatGb(item.credit_gb)} / {item.credit_days == null ? "—" : formatDays(item.credit_days)}
+                  </option>
+                ))}
+              </select>
+            </div>
+            {product && <dl className={styles.productFacts} aria-label="نرخ و اعتبار محصول">
+              <div><dt>نرخ هر گیگ</dt><dd>{formatToman(product.price_per_gb)}</dd></div>
+              <div><dt>نرخ هر روز</dt><dd>{formatToman(product.price_per_day)}</dd></div>
+              <div><dt>اعتبار حجم</dt><dd>{formatGb(product.credit_gb)}</dd></div>
+              <div><dt>اعتبار روز</dt><dd>{product.credit_days == null ? "—" : formatDays(product.credit_days)}</dd></div>
+            </dl>}
+            <div className={styles.fieldsRow}>
+              <div className={styles.field}>
+                <label htmlFor="purchase-username">نام کاربری</label>
+                <input id="purchase-username" className={styles.ltr} dir="ltr" required pattern={usernamePattern}
+                  minLength={3} maxLength={32} autoComplete="off" autoCapitalize="none" spellCheck={false}
+                  value={draft.username} onChange={(event) => change("username", event.target.value)} aria-describedby="purchase-username-hint" />
+              </div>
+              <div className={styles.field}>
+                <label htmlFor="purchase-volume">حجم (گیگ)</label>
+                <input id="purchase-volume" type="number" min={1} max={1_000_000} step={1} required
+                  value={draft.traffic_cap_gb} onChange={(event) => change("traffic_cap_gb", event.target.value)} />
+              </div>
+            </div>
+            <p className={styles.hint} id="purchase-username-hint">۳ تا ۳۲ نویسه از حروف انگلیسی، عدد یا زیرخط</p>
+            <div className={styles.field}>
+              <div className={styles.fieldLabel} id="purchase-expiry">تاریخ پایان شمسی</div>
+              <div className={styles.dateActions}>
+                <button type="button" ref={dateControl} className={styles.dateToggle} onClick={() => setCalendarOpen(!calendarOpen)}
+                  aria-controls="purchase-calendar" aria-expanded={calendarOpen}>
+                  <svg aria-hidden="true" width="17" height="17" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.4">
+                    <rect x="3" y="5" width="14" height="12" rx="2" />
+                    <path strokeLinecap="round" d="M3 9h14M7 3v4m6-4v4" />
+                  </svg>
+                  {draft.end_date ? <bdi dir="ltr">{formatDate(draft.end_date)}</bdi> : "انتخاب تاریخ"}
+                </button>
+                <div className={styles.terms} role="group" aria-label="مدت‌های پیشنهادی">
+                  {[31, 62, 93].map((days) => {
+                    const last = addJalaliDays(today, days);
+                    return <button type="button" key={days} aria-pressed={draft.end_date === last} onClick={() => chooseEnd(last)}>{formatDays(days)}</button>;
+                  })}
+                </div>
+              </div>
+              <div id="purchase-calendar" hidden={!calendarOpen} role="group" aria-labelledby="purchase-expiry">
+                {calendarOpen && <JalaliDateField value={draft.end_date} minExclusive={today}
+                  onChange={(value) => { chooseEnd(value); dateControl.current?.focus(); }} />}
+              </div>
+            </div>
+            <details className={styles.note}>
+              <summary>یادداشت مشتری <span>اختیاری</span></summary>
+              <textarea className={styles.noteInput} aria-label="یادداشت مشتری" rows={2} maxLength={2000}
+                value={draft.note} onChange={(event) => change("note", event.target.value)} />
+            </details>
+          </fieldset>
+        </section>
+
+        <section className={`${styles.card} ${styles.quote}`} aria-labelledby="purchase-quote">
+          <div className={styles.quoteHeading}>
+            <h2 id="purchase-quote">پیش‌فاکتور</h2>
+            {quote && <p>{formatGb(quote.need_gb)} · {formatDays(quote.need_days)}</p>}
           </div>
-          <JalaliDateField value={end} onChange={setEnd} minExclusive={today} />
-        </Field>
-        <Field label="یادداشت مشتری">
-          <textarea className={inputClass} value={note} maxLength={2000} onChange={(e) => setNote(e.target.value)} rows={3} />
-        </Field>
-      </div>
-      <div className="sticky bottom-0 z-20 space-y-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-lg lg:top-20 lg:self-start">
-        <div className="font-bold">خلاصه هزینه</div>
-        <QuoteBox quote={quote} />
-        {quoteError ? <Banner>{quoteError}</Banner> : null}
-        <Button type="submit" className="w-full" disabled={pending || !quote?.consent_token}>
-          {pending ? "در حال ساخت…" : "ثبت اشتراک"}
-        </Button>
-      </div>
-    </form>
+          <div className={styles.messages} aria-live="polite">
+            {error && <Banner>{error}</Banner>}
+            {followUp && <Banner tone="warn">{followUp}</Banner>}
+            {reprice && <Banner tone="warn">{reprice}</Banner>}
+            {quoteError && <Banner>{quoteError}</Banner>}
+          </div>
+          {quote ? (
+            <>
+              <dl className={styles.identity} aria-label="اشتراک مقصد">
+                <div><dt>نام کاربری</dt><dd><bdi dir="ltr">{request.draft.username.toLowerCase()}</bdi></dd></div>
+                <div><dt>محصول</dt><dd>{quote.product_name}</dd></div>
+              </dl>
+              <dl className={styles.credit} aria-label="از اعتبار محصول">
+                <div><dt>اعتبار حجم مصرفی</dt><dd>{formatGb(quote.gb_from_credit)}</dd></div>
+                <div><dt>اعتبار روز مصرفی</dt><dd>{formatDays(quote.days_from_credit)}</dd></div>
+              </dl>
+              <PurchaseWalletBreakdown
+                gb={quote.gb_paid} days={quote.days_paid}
+                gbRate={quote.price_per_gb} dayRate={quote.price_per_day}
+                gbCost={quote.gb_cost_toman} dayCost={quote.days_cost_toman}
+              />
+              {!quote.affordable && <p className={styles.notice} role="status">
+                {quote.message && <span>{quote.message}</span>}
+                {quote.shortage_toman > 0 && <>کسری موجودی <strong>{formatToman(quote.shortage_toman)}</strong></>}
+              </p>}
+              <dl className={styles.total}>
+                <div><dt>برداشت از کیف پول</dt><dd>{formatToman(quote.toman)}</dd></div>
+              </dl>
+            </>
+          ) : !quoteError && (
+            <p className={styles.empty} role="status">
+              {canQuote ? "در حال دریافت پیش‌فاکتور…" : "برای دریافت پیش‌فاکتور، نام کاربری، حجم و تاریخ پایان را تکمیل کنید."}
+            </p>
+          )}
+          <button className={styles.submit} type="submit" disabled={pending || !quote?.affordable || !quote.consent_token}>
+            {pending ? "در حال بررسی…" : followUp ? "پیگیری همان عملیات" : "ثبت اشتراک"}
+          </button>
+        </section>
+      </form>
+    </div>
   );
 }

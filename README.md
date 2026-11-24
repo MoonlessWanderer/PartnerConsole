@@ -13,26 +13,31 @@ Partner Console is a self-hosted B2B application for administrators and partners
 
 The application uses Next.js 15, React 19, TypeScript, FastAPI, Python, SQLAlchemy, Alembic, and V2Board. The Ubuntu installer targets Ubuntu 24.04 and provisions Node.js 22, Python 3.12 or newer, and MySQL 8.4 LTS. Domain setup uses Nginx and Certbot and requires a DNS name that resolves to the server and inbound HTTP and HTTPS access.
 
-## Installation
+## Install and update
 
-The application and installer are both **v1.0.7**. Download the installer and checksum file from the [v1.0.7 Release](https://github.com/MoonlessWanderer/PartnerConsole/releases/tag/v1.0.7).
+On Ubuntu 24.04, use the assets from the
+[latest stable GitHub Release](https://github.com/MoonlessWanderer/PartnerConsole/releases/latest).
+From an empty directory, verify the installer before giving it root access.
 
 ```bash
-work_dir="$(mktemp -d)"
-cd "$work_dir"
-release_url=https://github.com/MoonlessWanderer/PartnerConsole/releases/download/v1.0.7
+set -e
+release_url=https://github.com/MoonlessWanderer/PartnerConsole/releases/latest/download
 curl -fsSLO "$release_url/partnerconsole.sh"
 curl -fsSLO "$release_url/SHA256SUMS"
-sha256sum --check --strict SHA256SUMS
+awk '$2 == "partnerconsole.sh" {print; n++} END {exit n != 1}' SHA256SUMS > installer.sha256
+sha256sum --check --strict installer.sha256
+sudo bash ./partnerconsole.sh install
+sudo partnerconsole start
 ```
 
-After the checksum check succeeds, open the installer menu.
+The installer downloads and verifies its versioned application package. The
+default directory is /srv/partnerconsole. Set PARTNERCONSOLE_ROOT on the initial
+installer invocation to use a different directory.
 
-```bash
-sudo bash ./partnerconsole.sh
-```
-
-The default installation directory is `/srv/partnerconsole`. To choose a different directory, pass `PARTNERCONSOLE_ROOT` to the initial installer invocation. Once installed, open the menu with `sudo partnerconsole`.
+If installation stops at the initial administrator prompt, rerun the same
+commands with the same release. Install keeps the written configuration and
+finishes administrator setup. Repeating Install after initialization does
+not change the existing administrator account.
 
 | Service | Local address |
 | --- | --- |
@@ -45,7 +50,7 @@ Use an SSH tunnel to reach the local web and API ports before configuring a publ
 
 ## Installer commands
 
-These commands describe the installer in this checkout.
+These commands describe the installed stable release.
 
 | Command | Action |
 | --- | --- |
@@ -69,7 +74,9 @@ sudo partnerconsole backup
 sudo partnerconsole start
 ```
 
-With release discovery installed, run `sudo partnerconsole update` or choose **5) Update** in the installed menu. The command looks up the official GitHub Latest release. For a newer version, it verifies the downloaded installer's SHA256 against the GitHub release asset digest and checks its pinned tag before running it. When already current, it verifies release integrity and managed files without reinstalling or restarting services. Update refuses an older stable release.
+With release discovery installed, run `sudo partnerconsole update` or choose **5) Update** in the installed menu. The command looks up the official GitHub Latest release. For a newer version, it verifies the downloaded installer's SHA256 against the GitHub release asset digest and checks its pinned tag before running it. When already current, it checks the installed release identity and managed files without downloading the archive, reinstalling, or restarting. Update refuses an older stable release.
+
+For an installation on **v1.0.8**, run `sudo partnerconsole update` after the first packaged stable release is published. The same command applies later packaged releases.
 
 Installers through **v1.0.6** require a one-time manual upgrade to v1.0.7. You can also use a separately downloaded installer to select a particular target release. Download the installer and checksum into a new directory. The following command prompts for the published target tag.
 
@@ -80,12 +87,13 @@ read -rp 'Target release tag: ' tag
 release_url="https://github.com/MoonlessWanderer/PartnerConsole/releases/download/$tag"
 curl -fsSLO "$release_url/partnerconsole.sh" &&
 curl -fsSLO "$release_url/SHA256SUMS" &&
-sha256sum --check --strict SHA256SUMS &&
+awk '$2 == "partnerconsole.sh" {print; n++} END {exit n != 1}' SHA256SUMS > installer.sha256 &&
+sha256sum --check --strict installer.sha256 &&
 sudo bash ./partnerconsole.sh update &&
 sudo partnerconsole status
 ```
 
-Update checks the target tag and release tree, detects local changes to managed files, and rebuilds the web client with the existing `config/web.env`. It keeps the configured database and application settings. After Update, sign in using the existing account, refresh any open tabs, and review a fresh quote before confirming a paid action.
+Update checks the target tag and package digest, detects local changes to managed files, and rebuilds the web client with the existing `config/web.env`. It keeps the configured database and application settings. After Update, sign in using the existing account, refresh any open tabs, and review a fresh quote before confirming a paid action.
 
 For manual installation and recovery, see the [manual installation guide](dev/docs/guides/INSTALL.md) and [production maintenance procedure](dev/docs/guides/production-bootstrap.md).
 
@@ -113,7 +121,51 @@ For manual installations, use `bash scripts/reset-admin-password.sh --confirm-da
 
 Administrator and partner sessions on the same web origin share browser storage. The most recent sign-in replaces the saved session across tabs in the same profile. Use two separate browser profiles to stay signed in to both roles.
 
-## Development
+## Development and release
+
+Develop on `dev` and open a pull request from `dev` into `main` for review.
+The financial, fresh install, migration and installer matrix checks run on
+pushes to `dev` and pull requests into `main`. Financial and installer matrix
+checks also run for pushes to `main`. The automatic package uses an internal
+test version. The fresh installer and the first migration both consume the
+same archive from that run. Customer archives contain the files listed in
+`dev/release/runtime-files.txt`; development tools and tests stay in Git.
+
+### Validate and publish a stable release
+
+After review and merge, choose the stable version and the full SHA of the
+final commit on `main`. When the merge changes the commit SHA, build and
+verify the assets from the final `main` commit. Run **Candidate fresh Ubuntu
+install** manually on `main` with inputs `version` and `commit`:
+
+```bash
+git fetch origin main
+commit="$(git rev-parse origin/main)"
+gh workflow run fresh-install.yml --ref main -f version=v1.0.9 -f commit="$commit"
+```
+
+Replace the example version with the intended release tag. The workflow
+requires the selected commit to match the run's `main` SHA. It builds
+`partnerconsole.sh`, `partnerconsole-vX.Y.Z.tar.gz` and `SHA256SUMS`, then
+validates those exact files in fresh installation and migration. Confirm
+that the financial checks and installer matrix succeeded for the same SHA.
+
+Download the `package-<commit>` artifact from the successful manual run
+and verify it with `sha256sum --check --strict SHA256SUMS`. The maintainer
+then creates the tag at that exact commit on `main`, creates a draft GitHub
+Release, and attaches the three validated files. Check the attachment hashes
+before explicitly publishing it as stable. Pushes, merges and validation runs
+produce no public release. Installation and updates use stable GitHub Release
+assets.
+
+For a local build from a development checkout, run:
+
+```bash
+python3 dev/release/build.py "$(git rev-parse HEAD)" v1.0.9 /tmp/partnerconsole-release
+(cd /tmp/partnerconsole-release && sha256sum --check --strict SHA256SUMS)
+```
+
+### Local development
 
 Run the backend in one terminal. This example uses PowerShell:
 
@@ -167,7 +219,7 @@ bash dev/tests/installer/domain-build-next-check.sh
 
 Backend and frontend tests live under `dev/tests/`. The simulated V2Board panel lives in `dev/v2lab/`.
 
-`domain-build-next-check.sh` copies the repository to a temporary custom root, runs `npm ci` and real Next.js builds, and uses headless Chrome or Edge to record the sign-in request URLs. Set `CHROME` to the browser path if it is not detected. The `Installer Linux validation` workflow runs additional suites on GitHub-hosted Ubuntu 24.04. Its Credentials job uses a controlling terminal, the installed launcher, and disposable MySQL 8.4. The install, update, and restore job tests official release baselines against the candidate in a disposable runner-local repository, then runs Backup and Full Restore on fixture data. Backend tests use temporary SQLite databases and simulated V2Board responses for billing and rollback. The security suite and guarded MySQL tests document their own prerequisites.
+`domain-build-next-check.sh` copies the repository to a temporary custom root, runs `npm ci` and real Next.js builds, and uses headless Chrome or Edge to record the sign-in request URLs. Set `CHROME` to the browser path if it is not detected. The `Installer Linux validation` workflow runs additional suites on GitHub-hosted Ubuntu 24.04. Its Credentials job uses a controlling terminal, the installed launcher, and disposable MySQL 8.4. The install, update, and restore job tests official release baselines against the packaged candidate in a disposable runner, then runs Backup and Full Restore on fixture data. Backend tests use temporary SQLite databases and simulated V2Board responses for billing and rollback. The security suite and guarded MySQL tests document their own prerequisites.
 
 ## Security considerations
 
@@ -179,4 +231,4 @@ Backend and frontend tests live under `dev/tests/`. The simulated V2Board panel 
 
 ## Release notes
 
-See the [Installer v1.0.7 release notes](dev/docs/releases/v1.0.7/RELEASE_NOTES.md) for Update behavior and the one-time upgrade.
+See the [v1.0.8 release notes](dev/docs/releases/v1.0.8/RELEASE_NOTES.md) for the partner experience and purchase history changes, and the [v1.0.7 release notes](dev/docs/releases/v1.0.7/RELEASE_NOTES.md) for stable release discovery.

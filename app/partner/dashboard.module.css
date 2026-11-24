@@ -1,0 +1,155 @@
+.summary,
+.productGrid {
+  @apply grid grid-cols-2 gap-4;
+}
+
+.wallet,
+.subscriptions,
+.product {
+  @apply min-w-0 rounded-2xl border border-slate-200 bg-white text-slate-900 shadow-sm;
+}
+
+.wallet,
+.subscriptions {
+  @apply px-6 py-5;
+}
+
+.wallet {
+  @apply border-violet-200 bg-violet-100;
+}
+
+.subscriptions {
+  @apply flex items-center justify-between gap-2;
+}
+
+.subscriptions:hover {
+  @apply border-violet-300;
+}
+
+.subscriptions:focus-visible {
+  @apply outline outline-2 outline-offset-4 outline-violet-700;
+}
+
+.arrow {
+  @apply shrink-0 text-lg leading-none text-violet-700;
+}
+
+.summaryLabel {
+  @apply text-sm font-medium text-slate-600;
+}
+
+.summaryValue {
+  @apply mt-1 text-3xl font-bold leading-snug;
+  overflow-wrap: anywhere;
+}
+
+.wallet .summaryValue {
+  @apply text-violet-900;
+}
+
+.products {
+  @apply mt-8;
+}
+
+.products h2 {
+  @apply mb-3 text-lg font-bold;
+}
+
+.productHeader {
+  @apply flex flex-wrap items-center justify-between gap-x-3 gap-y-1 px-5 pb-4 pt-5;
+  overflow-wrap: anywhere;
+}
+
+.productHeader h3 {
+  @apply text-base font-bold;
+}
+
+.activeStatus,
+.inactiveStatus {
+  @apply inline-block max-w-full rounded-md px-2 py-1 text-xs font-medium;
+}
+
+.activeStatus {
+  @apply bg-emerald-50 text-emerald-800;
+}
+
+.inactiveStatus {
+  @apply bg-amber-100 text-amber-900;
+}
+
+.productMetrics {
+  @apply grid grid-cols-2 px-5;
+}
+
+.productMetric {
+  @apply border-t border-slate-200 py-3 pe-2;
+}
+
+.productMetric dt {
+  @apply text-sm font-medium text-slate-600;
+}
+
+.productMetric dd {
+  @apply mt-1 text-base font-bold;
+  overflow-wrap: anywhere;
+}
+
+.status {
+  @apply text-sm text-slate-600;
+}
+
+@media (max-width: 36rem) {
+  .summary,
+  .productGrid {
+    @apply gap-3;
+  }
+
+  .wallet,
+  .subscriptions {
+    @apply p-3;
+  }
+
+  .summaryLabel {
+    @apply text-xs;
+  }
+
+  .wallet .summaryValue {
+    font-size: clamp(0.875rem, 4.45vw, 1.25rem);
+  }
+
+  .subscriptions .summaryValue {
+    @apply text-xl;
+  }
+
+  .products {
+    @apply mt-5;
+  }
+
+  .products h2 {
+    @apply mb-2 text-base;
+  }
+
+  .productGrid {
+    @apply grid-cols-1;
+  }
+
+  .productHeader {
+    @apply p-3;
+  }
+
+  .productHeader h3 {
+    @apply text-sm;
+  }
+
+  .productMetrics {
+    @apply px-3;
+  }
+
+  .productMetric {
+    @apply py-2;
+  }
+
+  .productMetric dd {
+    @apply mt-0.5 text-sm;
+  }
+}

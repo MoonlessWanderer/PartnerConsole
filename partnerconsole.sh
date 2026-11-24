@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Installer v1.0.7 for Partner Console 1.0.7.
+# Installer template. Build it with dev/release/build.py.
 # The app runs as ppv1. Root never executes a file ppv1 can write.
 set -euo pipefail
 umask 077
 
-RELEASE_TAG="v1.0.7"
-APP_VERSION="${RELEASE_TAG#v}"
-RELEASE_TREE_SHA256="a04c9a61e962edb8c5db1be3fd9645e50fb7f24f1d7f5f57fdf69a942c3d9d02"
-OFFICIAL_REPO="https://github.com/MoonlessWanderer/PartnerConsole.git"
+RELEASE_TAG=""
+RELEASE_SOURCE_COMMIT=""
+RELEASE_ARCHIVE_SHA256=""
+OFFICIAL_RELEASES="https://github.com/MoonlessWanderer/PartnerConsole/releases"
 APP_USER="ppv1"
 DB_NAME="partnerconsole"
 DB_USER="partnerconsole"
@@ -64,6 +64,7 @@ assert_root_file() {
   local path="$1"
   local uid mode parent
   [[ -e "$path" ]] || die "Missing $path."
+  [[ ! -L "$path" ]] || die "Refusing symbolic link $path."
   uid="$(stat -c '%u' "$path")"
   mode="$(stat -c '%a' "$path")"
   [[ "$uid" == "0" ]] || die "Refusing $path because root does not own it."
@@ -115,35 +116,6 @@ import hashlib, sys
 path, expected = sys.argv[1], sys.argv[2].lower()
 digest = hashlib.sha256(open(path, "rb").read()).hexdigest()
 raise SystemExit(0 if digest == expected else 1)
-PY
-}
-
-tree_sha256() {
-  pp_python - "$1" <<'PY'
-import hashlib, subprocess, sys
-from pathlib import Path
-root = Path(sys.argv[1])
-raw = subprocess.check_output(["git", "-C", str(root), "ls-files", "-z"])
-paths = sorted(item.decode("utf-8") for item in raw.split(b"\0") if item)
-digest = hashlib.sha256()
-for rel in paths:
-    if rel.startswith("../") or "/../" in rel or rel.startswith("/"):
-        raise SystemExit(2)
-    path = root / rel
-    if path.is_symlink():
-        data = b"symlink\0" + str(path.readlink()).encode("utf-8")
-    else:
-        data = path.read_bytes()
-    if rel == "partnerconsole.sh":
-        lines = []
-        for line in data.splitlines(keepends=True):
-            if line.startswith(b"RELEASE_TREE_SHA256="):
-                ending = b"\r\n" if line.endswith(b"\r\n") else (b"\n" if line.endswith(b"\n") else b"")
-                line = b'RELEASE_TREE_SHA256=""' + ending
-            lines.append(line)
-        data = b"".join(lines)
-    digest.update(rel.encode("utf-8") + b"\0" + hashlib.sha256(data).digest())
-print(digest.hexdigest())
 PY
 }
 
@@ -236,22 +208,16 @@ wait_web() {
   return 1
 }
 
-release_git() {
-  local repo="$1"
-  shift
-  GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 \
-    git -C "$repo" -c core.hooksPath="$APP_ROOT/.release/hooks" -c safe.directory="$repo" "$@"
-}
-
 prepare_control_dirs() {
   local dir
   for dir in \
     "$APP_ROOT/.release" \
-    "$APP_ROOT/.release/hooks" \
     "$APP_ROOT/.release/tmp" \
     "$APP_ROOT/.release/previous" \
     "$APP_ROOT/.release/incoming"
   do
+    [[ ! -L "$dir" ]] || die "Refusing a symlink in the release directories."
+    if [[ "$(id -u)" -eq 0 && -e "$dir" ]]; then assert_root_file "$dir"; fi
     mkdir -p "$dir"
     if [[ "$(id -u)" -eq 0 ]]; then
       chown root:root "$dir"
@@ -260,41 +226,81 @@ prepare_control_dirs() {
   done
 }
 
-fetch_git_tag() {
-  local url="$1" dest="$2" tag="$3" head actual
-  [[ "$tag" == "$RELEASE_TAG" ]] || die "Only release tag ${RELEASE_TAG} can be installed."
-  [[ -n "$RELEASE_TREE_SHA256" && "$RELEASE_TREE_SHA256" =~ ^[0-9a-f]{64}$ ]] || die "The release integrity pin is missing."
-  [[ "$url" != *"@"* && "$url" != *$'\n'* ]] || die "The source URL contains credentials. Stopped."
-  [[ "$dest" == "$APP_ROOT/.release/incoming" ]] || die "Refusing to download into an unexpected directory."
-  prepare_control_dirs
-  rm -rf -- "$dest"
-  mkdir -p "$dest"
-  if [[ "$(id -u)" -eq 0 ]]; then
-    chown root:root "$dest"
-    chmod 700 "$dest"
-  fi
-  release_git "$dest" init -q
-  release_git "$dest" remote add origin "$url"
-  if [[ "$url" == https://* ]]; then
-    release_git "$dest" fetch --depth 1 origin "refs/tags/${tag}:refs/tags/${tag}"
-  else
-    release_git "$dest" -c protocol.file.allow=always fetch --depth 1 origin "refs/tags/${tag}:refs/tags/${tag}"
-  fi
-  release_git "$dest" checkout -q --detach "refs/tags/${tag}"
-  head="$(release_git "$dest" rev-parse HEAD)"
-  [[ "$head" == "$(release_git "$dest" rev-parse "refs/tags/${tag}^{}")" ]] || die "The checkout is not release tag ${tag}."
-  [[ -z "$(release_git "$dest" status --porcelain)" ]] || die "The release checkout is dirty."
-  actual="$(tree_sha256 "$dest")"
-  [[ "$actual" == "$RELEASE_TREE_SHA256" ]] || die "Release integrity check failed for ${tag}."
-  [[ -f "$dest/backend/pyproject.toml" ]] || die "The release has no application version."
-  grep -Fxq "version = \"$APP_VERSION\"" "$dest/backend/pyproject.toml" || die "The release is not Partner Console $APP_VERSION."
-  printf '%s\n' "$head"
+download_release_file() {
+  curl --disable --fail --silent --show-error --location \
+    --proto '=https' --proto-redir '=https' --connect-timeout 10 --max-time 120 --retry 2 "$@"
 }
 
+assert_package_identity() {
+  [[ "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)(\.(0|[1-9][0-9]*)){2}$ &&
+     "$RELEASE_SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ &&
+     "$RELEASE_ARCHIVE_SHA256" =~ ^[0-9a-f]{64}$ ]] ||
+    die "Use partnerconsole.sh from a published Partner Console release."
+}
+fetch_release_package() (
+  local work installer="$1"
+  assert_package_identity
+  prepare_control_dirs || return 1
+  work="$(mktemp -d -- "$APP_ROOT/.release/package.XXXXXXXX")" || return 1
+  trap 'rm -rf -- "$work"' EXIT
+  download_release_file -o "$work/package.tar.gz" \
+    "$OFFICIAL_RELEASES/download/$RELEASE_TAG/partnerconsole-$RELEASE_TAG.tar.gz" ||
+    die "Could not download the $RELEASE_TAG application package."
+  verify_sha256 "$work/package.tar.gz" "$RELEASE_ARCHIVE_SHA256" ||
+    die "Application package checksum mismatch for $RELEASE_TAG."
+  mkdir "$work/unpacked" || return 1
+  pp_python - "$work/package.tar.gz" "$work/unpacked" "$RELEASE_TAG" "$RELEASE_SOURCE_COMMIT" <<'PY' || return 1
+import json
+import re
+import shutil
+import sys
+import tarfile
+from pathlib import Path
+
+archive, dest, tag, commit = sys.argv[1:]
+root = Path(dest)
+blocked = {"dev", "tests", "data", "logs", "runtime", "backups", "node_modules", "partnerconsole.sh"}
+
+with tarfile.open(archive, "r:gz") as package:
+    members = {}
+    for member in package:
+        name = member.name
+        parts = name.split("/")
+        if (not member.isfile() or name in members or any(
+                not re.fullmatch(r"[A-Za-z0-9_\[][A-Za-z0-9_.\[\]-]*", part)
+                for part in parts)
+                or any(part in blocked for part in parts)
+                or name in {"config/api.env", "config/web.env"}):
+            sys.exit(f"Unsafe release archive member: {name!r}")
+        members[name] = member
+    required = {"PACKAGE.json", "backend/pyproject.toml", "package.json", "package-lock.json",
+                "install.sh", "start.sh", "stop.sh", "scripts/common.sh", "scripts/backup.sh",
+                "scripts/domain.sh", "release/v1.0.0/requirements.lock.txt"}
+    if not required.issubset(members):
+        sys.exit("The release archive is missing required files.")
+    if json.load(package.extractfile(members.pop("PACKAGE.json"))) != {"tag": tag, "commit": commit}:
+        sys.exit("The release archive version or source commit does not match the installer.")
+    version = f'version = "{tag[1:]}"'
+    if version not in package.extractfile(members["backend/pyproject.toml"]).read().decode().splitlines():
+        sys.exit("The backend package version does not match the installer.")
+    for name in ("package.json", "package-lock.json"):
+        if json.load(package.extractfile(members[name])).get("version") != tag[1:]:
+            sys.exit(f"The version in {name} does not match the installer.")
+    for name, member in members.items():
+        target = root / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with package.extractfile(member) as source, target.open("xb") as output:
+            shutil.copyfileobj(source, output)
+        target.chmod(0o700 if member.mode & 0o100 else 0o600)
+PY
+  install -m 700 -- "$installer" "$work/unpacked/partnerconsole.sh" || return 1
+  rm -rf -- "$APP_ROOT/.release/incoming" || return 1
+  mv -- "$work/unpacked" "$APP_ROOT/.release/incoming"
+)
 sync_release() {
   local mode="$1" source="$2" dest="$3"
   pp_python - "$mode" "$source" "$dest" <<'PY'
-import os, shutil, sys
+import hashlib, os, shutil, sys, tempfile
 from pathlib import Path
 mode, source, dest = sys.argv[1:]
 source, dest = Path(source).resolve(), Path(dest).resolve()
@@ -357,7 +363,7 @@ def safe_unlink(root: Path, rel: str):
 def copy_file(rel: str, src_root: Path, dst_root: Path):
     src = src_root / rel
     dst = dst_root / rel
-    if not inside(src, src_root) or not inside(dst, dst_root):
+    if skipped(rel) or not inside(src, src_root) or not inside(dst, dst_root):
         raise SystemExit(f"Release path escapes the tree: {rel}")
     if src.is_symlink():
         link = src.resolve()
@@ -371,11 +377,20 @@ def copy_file(rel: str, src_root: Path, dst_root: Path):
     if not src.is_file():
         raise SystemExit(f"Release entry is not a file: {rel}")
     dst.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(src, dst)
+    # The old installer may still be reading this file when Update returns.
+    # Keep its open inode intact until it finishes.
+    fd, filename = tempfile.mkstemp(prefix=".pc-release-", dir=dst.parent)
+    os.close(fd)
+    temp = Path(filename)
+    try:
+        shutil.copy2(src, temp)
+        temp.replace(dst)
+    finally:
+        temp.unlink(missing_ok=True)
 
 manifest = dest / ".release" / "managed.txt"
 if mode == "snapshot":
-    items = files_under(source)
+    items = read_manifest(source / ".release" / "managed.txt")
     previous = dest
     if previous.exists():
         shutil.rmtree(previous)
@@ -386,6 +401,22 @@ if mode == "snapshot":
 elif mode == "apply":
     items = files_under(source)
     old = set(read_manifest(manifest))
+    new = set(items)
+    obsolete = old - new
+    fingerprints = {}
+    if obsolete and (dest / ".release/current").is_file():
+        fingerprints = dict(line.split("\t", 1)[::-1] for line in
+                            (dest / ".release/applied.sha256").read_text(encoding="utf-8").splitlines())
+    for rel in new | old:
+        target = dest / rel
+        if skipped(rel) or target.is_symlink() or not inside(target, dest):
+            raise SystemExit(f"Refusing unsafe install path: {rel}")
+        if rel in obsolete and (dest / ".release/current").is_file():
+            if not target.is_file() or hashlib.sha256(target.read_bytes()).hexdigest() != fingerprints.get(rel):
+                raise SystemExit(f"Refusing to remove an unverified managed file: {rel}")
+        if rel not in old and target.exists():
+            raise SystemExit(f"Refusing to overwrite an unmanaged file: {rel}")
+    write_manifest(manifest, sorted(old | set(items)))
     for rel in sorted(old - set(items)):
         safe_unlink(dest, rel)
     for rel in items:
@@ -450,22 +481,22 @@ apply_permissions() {
   find "$APP_ROOT" \
     \( -path "$APP_ROOT/data" -o -path "$APP_ROOT/logs" -o -path "$APP_ROOT/runtime" \
        -o -path "$APP_ROOT/backups" -o -path "$APP_ROOT/.release" -o -path "$APP_ROOT/.home" \
-       -o -path "$APP_ROOT/config" \) -prune \
+       -o -path "$APP_ROOT/config" -o -path "$APP_ROOT/dev" -o -path "$APP_ROOT/.github" \) -prune \
     -o -type f -perm -0100 -print > "$exec_list"
   find "$APP_ROOT" \
     \( -path "$APP_ROOT/data" -o -path "$APP_ROOT/logs" -o -path "$APP_ROOT/runtime" \
        -o -path "$APP_ROOT/backups" -o -path "$APP_ROOT/.release" -o -path "$APP_ROOT/.home" \
-       -o -path "$APP_ROOT/config" \) -prune \
+       -o -path "$APP_ROOT/config" -o -path "$APP_ROOT/dev" -o -path "$APP_ROOT/.github" \) -prune \
     -o -exec chown -h root:"$gid" {} +
   find "$APP_ROOT" \
     \( -path "$APP_ROOT/data" -o -path "$APP_ROOT/logs" -o -path "$APP_ROOT/runtime" \
        -o -path "$APP_ROOT/backups" -o -path "$APP_ROOT/.release" -o -path "$APP_ROOT/.home" \
-       -o -path "$APP_ROOT/config" \) -prune \
+       -o -path "$APP_ROOT/config" -o -path "$APP_ROOT/dev" -o -path "$APP_ROOT/.github" \) -prune \
     -o -type d -exec chmod 750 {} +
   find "$APP_ROOT" \
     \( -path "$APP_ROOT/data" -o -path "$APP_ROOT/logs" -o -path "$APP_ROOT/runtime" \
        -o -path "$APP_ROOT/backups" -o -path "$APP_ROOT/.release" -o -path "$APP_ROOT/.home" \
-       -o -path "$APP_ROOT/config" \) -prune \
+       -o -path "$APP_ROOT/config" -o -path "$APP_ROOT/dev" -o -path "$APP_ROOT/.github" \) -prune \
     -o -type f -exec chmod 640 {} +
   while IFS= read -r file; do
     [[ -n "$file" && -f "$file" ]] || continue
@@ -474,7 +505,8 @@ apply_permissions() {
   rm -f "$exec_list"
   find "$APP_ROOT" \
     \( -path "$APP_ROOT/data" -o -path "$APP_ROOT/logs" -o -path "$APP_ROOT/runtime" \
-       -o -path "$APP_ROOT/backups" -o -path "$APP_ROOT/.release" -o -path "$APP_ROOT/.home" \) -prune \
+       -o -path "$APP_ROOT/backups" -o -path "$APP_ROOT/.release" -o -path "$APP_ROOT/.home" \
+       -o -path "$APP_ROOT/dev" -o -path "$APP_ROOT/.github" \) -prune \
     -o -type f -name '*.sh' -exec chmod 750 {} +
   if [[ -d "$APP_ROOT/.next" ]]; then
     install -d -o "$APP_USER" -g "$gid" -m 700 "$APP_ROOT/.next/cache"
@@ -739,7 +771,7 @@ install_deps() {
   log "Installing base packages..."
   # nginx and certbot are not installed here. Domain & SSL asks before installing them.
   apt-get update
-  apt_install ca-certificates curl gnupg git python3 python3-venv python3-pip build-essential pkg-config lsb-release xz-utils iproute2
+  apt_install ca-certificates curl gnupg python3 python3-venv python3-pip build-essential pkg-config lsb-release xz-utils iproute2
   python_ok || die "Python 3.12 was not found."
   if ! node_ok; then
     log "Installing Node.js ${NODE_VERSION}..."
@@ -786,10 +818,13 @@ EOF
 }
 
 write_marker() {
-  local commit="$1"
-  printf 'tag=%s\ncommit=%s\ntree=%s\n' "$RELEASE_TAG" "$commit" "$RELEASE_TREE_SHA256" > "$APP_ROOT/.release/current"
-  chown root:root "$APP_ROOT/.release/current"
-  chmod 600 "$APP_ROOT/.release/current"
+  local commit="$1" marker
+  marker="$(mktemp -- "$APP_ROOT/.release/current.XXXXXXXX")" || return 1
+  if ! printf 'tag=%s\ncommit=%s\narchive=%s\n' "$RELEASE_TAG" "$commit" "$RELEASE_ARCHIVE_SHA256" > "$marker" ||
+      ! mv -f -- "$marker" "$APP_ROOT/.release/current"; then
+    rm -f -- "$marker"
+    return 1
+  fi
 }
 
 current_commit() {
@@ -801,8 +836,8 @@ current_commit() {
 }
 
 record_applied_files() {
-  [[ -f "$APP_ROOT/.release/managed.txt" ]] || return 0
-  pp_python - "$APP_ROOT" <<'PY'
+  [[ -f "$APP_ROOT/.release/managed.txt" ]] || return 1
+  pp_python - "$APP_ROOT" <<'PY' || return 1
 import hashlib
 import sys
 from pathlib import Path
@@ -932,9 +967,7 @@ deploy_fetched() {
   reject_local_changes "$previous" "$commit"
   snapshot_release "$APP_ROOT/.release/previous" || die "Could not record the current code. No file was changed. The database was not changed."
   failed=0
-  if [[ "$commit" != "$previous" ]]; then
-    apply_incoming || failed=1
-  fi
+  apply_incoming || failed=1
   if [[ "$failed" -eq 0 ]]; then
     apply_permissions || failed=1
   fi
@@ -956,23 +989,20 @@ deploy_fetched() {
       die "The code update failed. The previous code and directory access were restored, but dependencies could not be rebuilt. The database was not rolled back."
     fi
   fi
-  write_marker "$commit"
-  record_applied_files
+  # A visible release marker must identify files that are ready to resume.
+  record_applied_files || die "Could not record the installed file fingerprints."
+  write_marker "$commit" || die "Could not record the installed release."
 }
 
 release_already_current() {
   local commit="$1" previous differences
   previous="$(current_commit || true)"
   [[ -n "$previous" && "$previous" == "$commit" ]] || return 1
+  grep -Fxq "tag=$RELEASE_TAG" "$APP_ROOT/.release/current" || return 1
+  grep -Fxq "archive=$RELEASE_ARCHIVE_SHA256" "$APP_ROOT/.release/current" || return 1
   [[ -f "$APP_ROOT/.release/applied.sha256" ]] || return 1
   differences="$(release_differences recorded)" || return 1
   [[ -z "$differences" ]]
-}
-
-deploy_verified_tree() {
-  local url="$1" commit
-  commit="$(fetch_git_tag "$url" "$APP_ROOT/.release/incoming" "$RELEASE_TAG")"
-  deploy_fetched "$commit"
 }
 
 ask_origin() {
@@ -980,7 +1010,7 @@ ask_origin() {
   while true; do
     log "Enter the site HTTPS origin, for example https://console.example.com"
     log "Press Enter if you do not have a domain yet. The app stays on this server and is not published."
-    tty_read -p "HTTPS origin: " origin
+    tty_read -p "HTTPS origin: " origin || return 1
     if [[ -z "$origin" ]]; then
       origin="http://127.0.0.1:3741"
       web_base="http://127.0.0.1:8741"
@@ -1014,8 +1044,8 @@ PY
 ask_admin_password() {
   local first second
   while true; do
-    tty_silent -p "Initial admin password (at least 12 characters, not saved): " first
-    tty_silent -p "Repeat password: " second
+    tty_silent -p "Initial admin password (at least 12 characters, not saved): " first || return 1
+    tty_silent -p "Repeat password: " second || return 1
     if [[ "$first" != "$second" ]]; then
       log "The passwords do not match."
       continue
@@ -1073,12 +1103,15 @@ subprocess.run([program, "--protocol=socket"], input=sql, text=True, check=True)
 PY
 }
 
+# 0: an admin exists, 1: bootstrap is needed, 2: readiness could not be verified.
 database_ready() {
   local tables admins
   assert_mysql_ident "$DB_NAME"
-  tables="$(mysql --protocol=socket -N -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='${DB_NAME}' AND table_name='admin_users'")"
-  [[ "$tables" == "1" ]] || return 1
-  admins="$(mysql --protocol=socket -N -e "SELECT COUNT(*) FROM ${DB_NAME}.admin_users")"
+  tables="$(mysql --protocol=socket -N -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='${DB_NAME}' AND table_name='admin_users'")" || return 2
+  [[ "$tables" != "0" ]] || return 1
+  [[ "$tables" == "1" ]] || return 2
+  admins="$(mysql --protocol=socket -N -e "SELECT COUNT(*) FROM ${DB_NAME}.admin_users")" || return 2
+  [[ "$admins" =~ ^[0-9]+$ ]] || return 2
   [[ "$admins" != "0" ]]
 }
 
@@ -1115,58 +1148,74 @@ for name, text in (("api.env", api), ("web.env", web)):
 PY
 }
 
-# shellcheck disable=SC2120
-setup_app() {
-  local url="${1:-$OFFICIAL_REPO}"
-  [[ "$url" == "$OFFICIAL_REPO" ]] || die "Installation only accepts the official Partner Console repository."
-  install_deps
-  ensure_user
-  local commit
-  commit="$(fetch_git_tag "$url" "$APP_ROOT/.release/incoming" "$RELEASE_TAG")"
-  if [[ -f "$APP_ROOT/config/api.env" ]]; then
-    log "The existing configuration was kept."
+setup_app() (
+  local install_lock ready=0
+  assert_package_identity
+  [[ ! -L "$APP_ROOT" ]] || die "Refusing a symbolic link at the install path."
+  ensure_install_directory
+  assert_root_file "$APP_ROOT"
+  exec {install_lock}< "$APP_ROOT" || die "Cannot open the install directory."
+  flock -n "$install_lock" || die "Another Install or Update is running for this installation."
+  if [[ -e "$APP_ROOT/.release/current" ]]; then
+    assert_root_file "$APP_ROOT/.release/current"
+    release_already_current "$RELEASE_SOURCE_COMMIT" ||
+      die "This installation differs from the downloaded release. Use Update for a different version or review local file changes."
+    assert_runtime_locked
+    log "The existing release and configuration were kept."
   else
-    local origin web_base db_password
-    local -a origin_lines
-    mapfile -t origin_lines < <(ask_origin)
-    origin="${origin_lines[0]}"
-    web_base="${origin_lines[1]}"
-    db_password="$(pp_python -c 'import secrets; print(secrets.token_urlsafe(24))')"
-    create_database "$db_password"
-    write_config "$origin" "$web_base" "$db_password"
-    unset db_password
-    log "The database password is only in config/api.env and was not printed."
+    install_deps
+    ensure_user
+    fetch_release_package "${BASH_SOURCE[0]}" || return 1
+    if [[ -f "$APP_ROOT/config/api.env" ]]; then
+      log "The existing configuration was kept."
+    else
+      local origin web_base db_password answers
+      local -a origin_lines
+      answers="$(ask_origin)" || return 1
+      mapfile -t origin_lines <<< "$answers"
+      origin="${origin_lines[0]}"
+      web_base="${origin_lines[1]}"
+      db_password="$(pp_python -c 'import secrets; print(secrets.token_urlsafe(24))')"
+      create_database "$db_password"
+      write_config "$origin" "$web_base" "$db_password"
+      unset db_password
+      log "The database password is only in config/api.env and was not printed."
+    fi
+    deploy_fetched "$RELEASE_SOURCE_COMMIT"
   fi
-  deploy_fetched "$commit"
+  assert_root_file "$APP_ROOT/config/api.env"
+  assert_root_file "$APP_ROOT/config/web.env"
   install_launcher
-  if database_ready; then
-    log "The database is already initialized. Bootstrap was not run again."
-  else
-    local admin_password
-    assert_root_file "$APP_ROOT/scripts/bootstrap.sh"
-    admin_password="$(ask_admin_password)"
-    runuser -u "$APP_USER" -- env ADMIN_PASSWORD="$admin_password" bash "$APP_ROOT/scripts/bootstrap.sh" --confirm-database
-    unset admin_password
-  fi
+  database_ready || ready=$?
+  case "$ready" in
+    0) log "The database is already initialized. Bootstrap was not run again." ;;
+    1)
+      local admin_password
+      assert_root_file "$APP_ROOT/scripts/bootstrap.sh"
+      admin_password="$(ask_admin_password)" || return 1
+      runuser -u "$APP_USER" -- env ADMIN_PASSWORD="$admin_password" bash "$APP_ROOT/scripts/bootstrap.sh" --confirm-database
+      unset admin_password
+      ;;
+    *) die "Could not check administrator initialization. Check the local MySQL service and rerun Install." ;;
+  esac
   log "Install finished. Do not expose ports 8741, 3741, or 3306."
   log "Start: sudo partnerconsole start"
-}
+)
 
 update_app() {
   [[ -f "$APP_ROOT/config/api.env" ]] || die "Install Partner Console before updating it."
-  local commit service_state=0
-  commit="$(fetch_git_tag "$OFFICIAL_REPO" "$APP_ROOT/.release/incoming" "$RELEASE_TAG")" || return 1
-  # Use the verified incoming detector even when the installed release predates it.
-  app_running "$APP_ROOT/.release/incoming/scripts/common.sh" || service_state=$?
-  [[ "$service_state" -lt 2 ]] || die "Cannot verify the application processes and ports. Update stopped."
-  if release_already_current "$commit"; then
+  local commit="$RELEASE_SOURCE_COMMIT" service_state=0
+  if [[ -f "$APP_ROOT/.release/current" ]] && grep -Fxq "tag=$RELEASE_TAG" "$APP_ROOT/.release/current"; then
+    reject_local_changes "$(current_commit || true)" "$commit"
+    release_already_current "$commit" ||
+      die "Release $RELEASE_TAG is already installed, but its saved identity differs. Refusing to reinstall the same version."
     log "This install is already release ${RELEASE_TAG}. No file was changed."
     return 0
   fi
   reject_local_changes "$(current_commit || true)" "$commit"
-  if [[ -f "$APP_ROOT/.release/current" ]] && grep -Fxq "tag=$RELEASE_TAG" "$APP_ROOT/.release/current"; then
-    die "Release $RELEASE_TAG is already installed, but its saved identity differs. Refusing to reinstall the same version."
-  fi
+  fetch_release_package "${BASH_SOURCE[0]}" || return 1
+  app_running "$APP_ROOT/.release/incoming/scripts/common.sh" || service_state=$?
+  [[ "$service_state" -lt 2 ]] || die "Cannot verify the application processes and ports. Update stopped."
   ensure_user
   install_deps
   deploy_fetched "$commit"
@@ -1181,8 +1230,17 @@ installed_release_tag() {
   local marker="$APP_ROOT/.release/current" tag
   assert_root_file "$marker"
   tag="$(sed -n 's/^tag=//p' "$marker")"
-  [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "The installed release marker has no valid version."
+  [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]] ||
+    die "The installed release marker has no valid version."
   printf '%s\n' "$tag"
+}
+
+release_is_older() {
+  local target="$1" installed="$2"
+  # dpkg treats a hyphen as a packaging revision. A release candidate must
+  # instead sort below the stable version with the same major/minor/patch.
+  installed="${installed/-rc./~rc.}"
+  dpkg --compare-versions "${target#v}" lt "${installed#v}"
 }
 
 apply_pinned_update() (
@@ -1191,7 +1249,7 @@ apply_pinned_update() (
   flock -n "$update_lock" || die "Another Update is running for this installation."
   if [[ -f "$APP_ROOT/.release/current" ]]; then
     installed="$(installed_release_tag)" || return 1
-    if dpkg --compare-versions "${RELEASE_TAG#v}" lt "${installed#v}"; then
+    if release_is_older "$RELEASE_TAG" "$installed"; then
       die "Release $installed is already installed. Refusing to downgrade to $RELEASE_TAG."
     fi
   fi
@@ -1235,6 +1293,11 @@ if (release.get("draft") is not False or release.get("prerelease") is not False
 assets = release.get("assets")
 if not isinstance(assets, list):
     sys.exit("The release must contain one uploaded partnerconsole.sh asset.")
+for name in (f"partnerconsole-{tag}.tar.gz", "SHA256SUMS"):
+    matches = [a for a in assets if isinstance(a, dict) and a.get("name") == name]
+    if (len(matches) != 1 or matches[0].get("state") != "uploaded"
+            or not re.fullmatch(r"sha256:[0-9a-f]{64}", str(matches[0].get("digest")))):
+        sys.exit(f"The release must contain one uploaded {name} with a SHA256 digest.")
 assets = [a for a in assets if isinstance(a, dict) and a.get("name") == "partnerconsole.sh"]
 if len(assets) != 1 or assets[0].get("state") != "uploaded":
     sys.exit("The release must contain one uploaded partnerconsole.sh asset.")
@@ -1245,7 +1308,7 @@ print(tag, digest.removeprefix("sha256:"))
 PY
   )" || die "Invalid GitHub release metadata. Update stopped."
   read -r tag digest <<< "$metadata"
-  if dpkg --compare-versions "${tag#v}" lt "${installed#v}"; then
+  if release_is_older "$tag" "$installed"; then
     die "GitHub lists $tag as latest. Refusing to downgrade from $installed."
   fi
   if [[ "$tag" == "$installed" ]]; then
@@ -1255,7 +1318,7 @@ PY
   fi
   log "Updating Partner Console from $installed to $tag."
   "${download[@]}" -o "$work/partnerconsole.sh" \
-    "${OFFICIAL_REPO%.git}/releases/download/$tag/partnerconsole.sh" ||
+    "$OFFICIAL_RELEASES/download/$tag/partnerconsole.sh" ||
     die "Could not download the $tag installer."
   verify_sha256 "$work/partnerconsole.sh" "$digest" || die "Installer checksum mismatch for $tag."
   [[ "$(sed -n '/^RELEASE_TAG=/p' "$work/partnerconsole.sh")" == "RELEASE_TAG=\"$tag\"" ]] ||
@@ -1431,7 +1494,10 @@ menu_loop() {
     printf '  0) Exit\n\n'
     tty_read -p "Choice: " choice
     case "$choice" in
-      1) (set -e; run_choice install) || log "Failed." ;;
+      1)
+        # Start a new Bash so the menu's failure handler cannot suppress errexit.
+        PARTNERCONSOLE_ROOT="$APP_ROOT" /usr/bin/bash "${BASH_SOURCE[0]}" install || log "Failed."
+        ;;
       2) (set -e; run_choice start) || log "Failed." ;;
       3) (set -e; run_choice stop) || log "Failed." ;;
       4) (set -e; run_choice restart) || log "Failed." ;;

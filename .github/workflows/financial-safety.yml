@@ -2,7 +2,7 @@ name: Financial consent Linux validation
 
 on:
   push:
-    branches: [main, 'release-validation/**']
+    branches: [dev, main]
   pull_request:
     branches: [main]
 
@@ -143,6 +143,6 @@ jobs:
             if [[ "$suite" == integration ]]; then
               python -m pytest -c pyproject.toml -q ../dev/tests/backend/test_mysql_integration.py
             else
-              python -m pytest -c pyproject.toml -q ../dev/tests/backend/test_mysql_release_validation.py
+              python -m pytest -c pyproject.toml -v ../dev/tests/backend/test_mysql_release_validation.py
             fi
           done

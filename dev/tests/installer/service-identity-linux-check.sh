@@ -203,7 +203,11 @@ pp_clear_service_identity api
 
 # Exercise the actual Update entry point using a verified-tree fixture and
 # real restart. Installation/SQL/package work is outside this process test.
-fetch_git_tag() { mkdir -p "$2/scripts"; cp "$repo/scripts/common.sh" "$2/scripts/"; echo demo; }
+fetch_release_package() {
+  local incoming="$APP_ROOT/.release/incoming"
+  mkdir -p "$incoming/scripts"
+  cp "$repo/scripts/common.sh" "$incoming/scripts/"
+}
 release_already_current() { return 1; }
 reject_local_changes() { :; }
 ensure_user() { :; }

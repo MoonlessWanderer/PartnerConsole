@@ -2,9 +2,9 @@
 # Disposable Ubuntu 24.04 as root only, for example a GitHub-hosted runner.
 # Uses the installer's own functions to install MySQL 8.4 and the published
 # baseline fixture, runs the official Update to the release tag in
-# RELEASE_ORIGIN, then runs the official
+# RELEASE_ASSETS, then runs the official
 # Backup and Restore against fixture data. Prompts are answered by the test.
-# Usage: PARTNERCONSOLE_DISPOSABLE_HOST=1 RELEASE_ORIGIN=REPO BROWSER_USER=USER bash THIS
+# Usage: PARTNERCONSOLE_DISPOSABLE_HOST=1 RELEASE_ASSETS=DIR BROWSER_USER=USER bash THIS
 set -euo pipefail
 umask 077
 
@@ -17,7 +17,7 @@ ok() { printf 'ok %s\n' "$*"; }
 # shellcheck disable=SC1091
 . /etc/os-release
 [[ "${ID:-}" == ubuntu && "${VERSION_ID:-}" == 24.04 ]] || fail 'requires Ubuntu 24.04'
-release_origin="${RELEASE_ORIGIN:?set RELEASE_ORIGIN to a repository with the release tag}"
+release_assets="${RELEASE_ASSETS:?set RELEASE_ASSETS to the directory of sealed assets}"
 browser_user="${BROWSER_USER:?set BROWSER_USER to a non-root account for the browser}"
 [[ "$(id -u "$browser_user")" != 0 ]] || fail 'the browser account must not be root'
 browser="${CHROME:-$(command -v google-chrome || command -v chromium || true)}"
@@ -42,19 +42,12 @@ chmod 755 "$work"
 PC_FIXTURE_ADMIN_PASSWORD="$(python3 -c 'import secrets; print(secrets.token_urlsafe(18))')"
 export PC_FIXTURE_ADMIN_PASSWORD
 
-checkout_git() { git -c safe.directory="$repo" -C "$repo" "$@"; }
-new_tag="$(sed -n 's/^RELEASE_TAG="\(.*\)"$/\1/p' "$repo/partnerconsole.sh")"
-new_commit="$(git -c safe.directory="$release_origin" -C "$release_origin" rev-parse "refs/tags/${new_tag}^{commit}")"
-source_commit="$(checkout_git rev-parse HEAD)"
-origin_git() { git -c safe.directory="$release_origin" -C "$release_origin" "$@"; }
-origin_git show "$new_commit:partnerconsole.sh" > "$work/target.sh"
-if [[ "$new_commit" != "$source_commit" ]]; then
-  [[ "$(origin_git rev-parse "$new_commit^")" == "$source_commit" &&
-     "$(origin_git diff --name-only "$source_commit" "$new_commit")" == partnerconsole.sh ]] ||
-    fail "private candidate differs from the checkout"
-  cmp -s <(sed '/^RELEASE_TREE_SHA256=/d' "$repo/partnerconsole.sh") \
-    <(sed '/^RELEASE_TREE_SHA256=/d' "$work/target.sh") || fail "private installer differs beyond its tree pin"
-fi
+new_tag="$(sed -n 's/^RELEASE_TAG="\(.*\)"$/\1/p' "$release_assets/partnerconsole.sh")"
+new_commit="$(sed -n 's/^RELEASE_SOURCE_COMMIT="\(.*\)"$/\1/p' "$release_assets/partnerconsole.sh")"
+source_commit="$(git -c safe.directory="$repo" -C "$repo" rev-parse HEAD)"
+[[ "$new_commit" == "$source_commit" ]] || fail "private candidate differs from the checkout"
+(cd "$release_assets" && sha256sum --check --strict SHA256SUMS)
+cp "$release_assets/partnerconsole.sh" "$work/target.sh"
 printf 'testing %s at %s (checkout %s)\n' "$new_tag" "$new_commit" "$source_commit"
 
 baseline_tree="$work/baseline"
@@ -74,7 +67,7 @@ else
   baseline_pin="$(
     export PARTNERCONSOLE_LIBRARY=1
     # shellcheck disable=SC1091
-    source "$repo/partnerconsole.sh"
+    source "$repo/dev/tests/installer/legacy-tree.sh"
     tree_sha256 "$baseline_tree"
   )"
 fi
@@ -87,8 +80,8 @@ cat > "$work/overrides.sh" <<EOF
 install_deps() { node_ok || install_node; node_ok && python_ok && mysql_version_ok; }
 ask_origin() { printf '%s\n%s\n' '$origin' '$origin'; }
 ask_admin_password() { printf '%s\n' "\$PC_FIXTURE_ADMIN_PASSWORD"; }
-OFFICIAL_REPO="\${PC_RELEASE_ORIGIN:-\$OFFICIAL_REPO}"
-RELEASE_TREE_SHA256="\${PC_RELEASE_TREE_SHA256:-\$RELEASE_TREE_SHA256}"
+OFFICIAL_REPO="\${PC_RELEASE_ORIGIN:-\${OFFICIAL_REPO:-}}"
+RELEASE_TREE_SHA256="\${PC_RELEASE_TREE_SHA256:-\${RELEASE_TREE_SHA256:-}}"
 EOF
 
 # Runs an installer function from the given partnerconsole.sh in a new Bash, so
@@ -297,8 +290,15 @@ for service in api web; do
   before_pid[$service]="$(service_field "$service" pid)"
   before_start[$service]="$(service_field "$service" starttime)"
 done
-PC_RELEASE_ORIGIN="$release_origin" \
-  run_with "$work/target.sh" update_app || fail "official Update to $new_tag"
+# Only the archive URL is served from the fixture. The installer still checks its own pin.
+cat >> "$work/overrides.sh" <<'EOF'
+download_release_file() {
+  [[ "$1" == -o && "$3" == "$OFFICIAL_RELEASES/download/$RELEASE_TAG/partnerconsole-$RELEASE_TAG.tar.gz" ]] || return 1
+  cp "$RELEASE_ASSETS/partnerconsole-$RELEASE_TAG.tar.gz" "$2"
+}
+EOF
+export RELEASE_ASSETS="$release_assets"
+run_with "$work/target.sh" update_command || fail "official Update to $new_tag"
 [[ "$(release_field tag)" == "$new_tag" && "$(release_field commit)" == "$new_commit" ]] || fail "$new_tag release marker"
 for service in api web; do
   [[ "$(service_field "$service" pid)" != "${before_pid[$service]}" &&

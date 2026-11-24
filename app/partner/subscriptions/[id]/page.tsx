@@ -1,17 +1,56 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { useParams, useRouter } from "next/navigation";
+import Link from "next/link";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
+import { Suspense, useEffect, useState } from "react";
 import { JalaliDateField } from "@/components/JalaliDateField";
 import { Modal } from "@/components/Modal";
 import { QuoteBox } from "@/components/QuoteBox";
-import { Banner, Button, Field, inputClass } from "@/components/ui";
+import { Badge, Banner, Button, Field, inputClass } from "@/components/ui";
 import { api, ApiError, sessionToken } from "@/lib/api";
 import { STATUS_LABEL, faDigits, formatDate, formatDays, formatGb, formatToman } from "@/lib/format";
 import { addJalaliDays, todayJalali } from "@/lib/jalali";
 import { Quote, SubscriptionRow } from "@/lib/types";
+import styles from "./subscription-details.module.css";
+
+const subscriptionsPath = "/partner/subscriptions";
+const trafficNumber = new Intl.NumberFormat("fa-IR", { maximumFractionDigits: 2 });
+const trafficPercent = new Intl.NumberFormat("fa-IR", { style: "percent", maximumFractionDigits: 1 });
+
+function nonnegativeGb(value: string | null | undefined) {
+  if (value == null || value.trim() === "") return null;
+  const amount = Number(value);
+  return Number.isFinite(amount) && amount >= 0 ? amount : null;
+}
 
 type Mode = null | "increase" | "decrease" | "reset" | "delete" | "ban" | "link";
+
+function SubscriptionBackLink() {
+  const params = useSearchParams();
+  const listQuery = new URLSearchParams(params.get("listQuery") ?? "");
+  const returnQuery = new URLSearchParams();
+  const search = listQuery.get("q");
+  if (search?.trim()) returnQuery.set("q", search);
+
+  const rawOffset = listQuery.get("offset");
+  if (rawOffset && /^\d+$/.test(rawOffset)) {
+    const offset = Number(rawOffset);
+    if (offset > 0 && Number.isSafeInteger(offset)) returnQuery.set("offset", String(offset));
+  }
+
+  const query = returnQuery.toString();
+  return (
+    <Link
+      className={styles.backLink}
+      href={query ? `${subscriptionsPath}?${query}` : subscriptionsPath}
+      aria-label="بازگشت به اشتراک‌ها"
+      prefetch={false}
+    >
+      <span className={styles.backArrow} dir="ltr" aria-hidden="true">→</span>
+      اشتراک‌ها
+    </Link>
+  );
+}
 
 export default function SubscriptionDetailPage() {
   const params = useParams<{ id: string }>();
@@ -104,6 +143,20 @@ export default function SubscriptionDetailPage() {
     }
   }
 
+  async function copyLink(url: string | null | undefined) {
+    if (!url) return;
+    setError("");
+    setInfo("");
+    try {
+      await navigator.clipboard.writeText(url);
+      setInfo("لینک کپی شد.");
+    } catch {
+      setError("کپی لینک ممکن نشد.");
+    }
+  }
+
+
+
   async function saveNote() {
     setError("");
     try {
@@ -114,62 +167,127 @@ export default function SubscriptionDetailPage() {
     }
   }
 
-  if (!row) return <p>{error || "در حال بارگذاری…"}</p>;
+  const backLink = <Suspense fallback={null}><SubscriptionBackLink /></Suspense>;
+
+  if (!row) {
+    return (
+      <div className={styles.page}>
+        {backLink}
+        <p>{error || "در حال بارگذاری…"}</p>
+      </div>
+    );
+  }
+
+  const isActive = row.status === "active";
   const baseDate = row.status === "active" ? row.expired_jalali : todayJalali();
+  const statusLabel = STATUS_LABEL[row.status];
+
+  const cap = nonnegativeGb(row.traffic_cap_gb);
+  const used = row.live_error ? null : nonnegativeGb(row.used_gb);
+  const hasCap = cap !== null && cap > 0;
+  const remaining = hasCap && used !== null ? Math.max(0, cap - used) : null;
+  const usedShare = hasCap && used !== null ? used / cap : null;
+  const percent = usedShare !== null && Number.isFinite(usedShare) ? trafficPercent.format(usedShare) : null;
+  const usageLabel = used === null
+    ? "مقدار مصرف در دسترس نیست."
+    : `${trafficNumber.format(used)} گیگ${hasCap ? ` از ${trafficNumber.format(cap)} گیگ` : ""} مصرف شده`;
 
   return (
-    <div className="space-y-4">
-      {error && !mode ? <Banner>{error}</Banner> : null}
-      {info ? <Banner tone="ok">{info}</Banner> : null}
-      <div className="rounded-2xl bg-white p-4">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <h2 className="text-xl font-bold">{row.username}</h2>
-          <span className="rounded-full bg-slate-100 px-3 py-1 text-sm">{STATUS_LABEL[row.status]}</span>
+    <div className={styles.page}>
+      {backLink}
+      {(error && !mode || info) ? (
+        <div className={styles.messages}>
+          {error && !mode ? <Banner>{error}</Banner> : null}
+          {info ? <Banner tone="ok">{info}</Banner> : null}
         </div>
-        <div className="mt-3 grid gap-2 text-sm sm:grid-cols-2">
-          <div>محصول: {row.product_name}</div>
-          <div>پنل: {row.panel_name}</div>
-          <div>سقف: {formatGb(row.traffic_cap_gb)}</div>
-          <div>انقضا: {formatDate(row.expired_jalali)} ({formatDays(row.days_left)})</div>
-          <div>شناسه پنل: {row.v2_user_id}</div>
-          <div>موجودی تومان: {formatToman(row.balance_toman)}</div>
-        </div>
-        {row.live_error ? <div className="mt-3"><Banner>{row.live_error}</Banner></div> : (
-          <div className="mt-3 space-y-2 text-sm">
-            <div>مصرف زنده: {formatGb(row.used_gb)} (آپلود {formatGb(row.upload_gb)} / دانلود {formatGb(row.download_gb)})</div>
-            <div className="break-all rounded-xl bg-slate-50 p-3">{row.subscribe_url || "لینک از پنل نیامد"}</div>
-            {row.subscribe_url ? (
-              <Button
-                tone="soft"
-                onClick={() => {
-                  navigator.clipboard.writeText(row.subscribe_url || "").then(
-                    () => setInfo("لینک کپی شد."),
-                    () => setError("کپی لینک ممکن نشد."),
-                  );
-                }}
-              >
-                کپی لینک
-              </Button>
-            ) : null}
-            {row.subscribe_url_fallback ? <p className="text-xs text-amber-800">لینک با مسیر استاندارد ساخته شد چون پنل آدرس نداد.</p> : null}
+      ) : null}
+      <div className={styles.grid}>
+        <section className={`${styles.card} ${styles.summary}`} aria-labelledby="subscription-customer">
+          <div className={styles.customer}>
+            <h2 id="subscription-customer">
+              <bdi dir="ltr">{row.username}</bdi>
+              {isActive ? (
+                <svg className={styles.active} role="img" aria-label="فعال" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.65">
+                  <circle cx="10" cy="10" r="8" />
+                  <path strokeLinecap="round" strokeLinejoin="round" d="m6.5 10 2.3 2.3 4.7-4.7" />
+                </svg>
+              ) : null}
+            </h2>
+            {!isActive ? <span dir="rtl"><Badge tone="warn">{typeof statusLabel === "string" ? statusLabel : row.status}</Badge></span> : null}
           </div>
-        )}
-      </div>
-      <div className="flex flex-wrap gap-2">
-        <Button disabled={pending} onClick={() => { setMode("increase"); setEnd(""); setQuote(null); setError(""); }}>افزایش</Button>
-        <Button disabled={pending} tone="ghost" onClick={() => { setMode("decrease"); setEnd(""); setQuote(null); setError(""); }}>کاهش</Button>
-        <Button disabled={pending} tone="ghost" onClick={() => { setMode("link"); setQuote(null); setError(""); }}>ریست لینک</Button>
-        <Button disabled={pending} tone="soft" onClick={() => { setMode("reset"); setQuote(null); setError(""); }}>ریست ترافیک</Button>
-        <Button disabled={pending} tone={row.banned ? "primary" : "danger"} onClick={() => { setMode("ban"); setQuote(null); setError(""); }}>
-          {row.banned ? "رفع مسدودی" : "مسدود"}
-        </Button>
-        <Button disabled={pending} tone="danger" onClick={() => { setMode("delete"); setQuote(null); setError(""); }}>حذف</Button>
-      </div>
-      <div className="rounded-2xl bg-white p-4">
-        <Field label="یادداشت مشتری">
-          <textarea className={inputClass} rows={3} maxLength={2000} value={note} onChange={(e) => setNote(e.target.value)} />
-        </Field>
-        <div className="mt-3"><Button tone="ghost" onClick={saveNote}>ذخیره یادداشت</Button></div>
+          <dl className={styles.remaining}>
+            <div><dt>زمان باقی‌مانده</dt><dd>{formatDays(row.days_left)}</dd></div>
+            <div><dt>حجم باقی‌مانده</dt><dd>{formatGb(remaining)}</dd></div>
+          </dl>
+          <dl className={styles.facts}>
+            <div><dt>محصول</dt><dd>{row.product_name ?? "—"}</dd></div>
+            <div><dt>سقف حجم</dt><dd>{formatGb(cap)}</dd></div>
+            <div><dt>تاریخ انقضا</dt><dd><bdi dir="ltr">{formatDate(row.expired_jalali)}</bdi></dd></div>
+          </dl>
+        </section>
+
+        <div className={styles.workspace}>
+          <section className={styles.card} aria-labelledby="subscription-usage">
+            <h2 id="subscription-usage">مصرف ترافیک</h2>
+            {row.live_error ? <div className={styles.notice}><Banner>{row.live_error}</Banner></div> : null}
+            <div className={styles.traffic}>
+              <div className={styles.usageSummary}>
+                <p>{usageLabel}</p>
+                {percent !== null ? <bdi aria-hidden="true">{percent}</bdi> : null}
+              </div>
+              {usedShare !== null && percent !== null ? (
+                <progress className={styles.usageBar} max={1} value={Math.min(usedShare, 1)}
+                  aria-label="سهم حجم مصرف‌شده" aria-valuetext={percent} />
+              ) : null}
+              <dl className={styles.trafficDirections}>
+                <div><dt>دانلود</dt><dd>{formatGb(row.live_error ? null : nonnegativeGb(row.download_gb))}</dd></div>
+                <div><dt>آپلود</dt><dd>{formatGb(row.live_error ? null : nonnegativeGb(row.upload_gb))}</dd></div>
+              </dl>
+            </div>
+            {!row.live_error && (
+              row.subscribe_url ? (
+                <div className={styles.linkArea}>
+                  <label htmlFor="subscription-link">لینک اشتراک</label>
+                  <div className={styles.linkControl} dir="ltr">
+                    <input id="subscription-link" value={row.subscribe_url} readOnly />
+                    <button type="button" onClick={() => copyLink(row.subscribe_url)}>
+                      <svg aria-hidden="true" width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5">
+                        <rect x="7" y="7" width="9" height="10" rx="2" />
+                        <path d="M5 12H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h7a1 1 0 0 1 1 1v1" />
+                      </svg>
+                      کپی لینک
+                    </button>
+                  </div>
+                  {row.subscribe_url_fallback ? <p className={styles.fallback}>لینک با مسیر استاندارد ساخته شد چون پنل آدرس نداد.</p> : null}
+                </div>
+              ) : <p className={styles.notice}>لینک از پنل نیامد</p>
+            )}
+          </section>
+
+          <section className={styles.card} aria-labelledby="subscription-management">
+            <h2 id="subscription-management">مدیریت اشتراک</h2>
+            <div className={styles.actions}>
+              <button type="button" disabled={pending} className={styles.primary} onClick={() => { setMode("increase"); setEnd(""); setQuote(null); setError(""); }}>افزایش</button>
+              <button type="button" disabled={pending} className={styles.secondary} onClick={() => { setMode("decrease"); setEnd(""); setQuote(null); setError(""); }}>کاهش</button>
+              <button type="button" disabled={pending} className={styles.secondary} onClick={() => { setMode("reset"); setQuote(null); setError(""); }}>ریست ترافیک</button>
+              <button type="button" disabled={pending} className={styles.secondary} onClick={() => { setMode("link"); setQuote(null); setError(""); }}>ریست لینک</button>
+            </div>
+            <div className={styles.sensitive} role="group" aria-label="عملیات حساس">
+              <button type="button" disabled={pending} className={row.banned ? styles.unban : undefined} onClick={() => { setMode("ban"); setQuote(null); setError(""); }}>
+                {row.banned ? "رفع مسدودی" : "مسدود"}
+              </button>
+              <button type="button" disabled={pending} onClick={() => { setMode("delete"); setQuote(null); setError(""); }}>حذف</button>
+            </div>
+          </section>
+
+          <section className={styles.card} aria-labelledby="subscription-note-title">
+            <h2 id="subscription-note-title"><label htmlFor="subscription-note">یادداشت مشتری</label></h2>
+            <textarea id="subscription-note" className={styles.note} rows={2} maxLength={2000} value={note} onChange={(event) => setNote(event.target.value)} />
+            <div className={styles.noteActions}>
+              <button type="button" className={styles.secondary} onClick={saveNote}>ذخیره یادداشت</button>
+            </div>
+          </section>
+        </div>
       </div>
       {mode ? (
         <Modal title={mode === "increase" ? "افزایش" : mode === "decrease" ? "کاهش" : mode === "reset" ? "ریست ترافیک" : mode === "link" ? "ریست لینک" : mode === "ban" ? (row.banned ? "رفع مسدودی" : "مسدود کردن") : "حذف اشتراک"} error={error} onClose={() => setMode(null)}>
