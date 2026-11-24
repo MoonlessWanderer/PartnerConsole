@@ -11,7 +11,7 @@ runtime/tmp/     TMPDIR
 runtime/cache/   cache پایپ، npm، XDG و bytecode پایتون
 runtime/pids/    pid فرآیندهای start.sh
 backend/.venv    محیط Python همین پوشه
-release/         lockfile و قالب‌های نصب؛ خروجی render در release/v1.0.0/generated
+deploy/          lockfile و قالب‌های نصب؛ خروجی render در deploy/generated
 dev/docs/       راهنماها و یادداشت انتشار جاری
 ```
 

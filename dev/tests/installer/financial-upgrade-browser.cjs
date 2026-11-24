@@ -3,18 +3,16 @@
 const assert = require("node:assert/strict");
 const crypto = require("node:crypto");
 const fs = require("node:fs");
-const http = require("node:http");
-const https = require("node:https");
 const path = require("node:path");
 const { setTimeout: sleep } = require("node:timers/promises");
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE);
 
-const [executablePath, work, origin] = process.argv.slice(2);
+const [executablePath, work] = process.argv.slice(2);
+const origin = "http://127.0.0.1:3741";
 const api = "http://127.0.0.1:8741";
 const panel = "http://127.0.0.1:18788";
 const password = crypto.randomBytes(24).toString("base64url");
 const route = "/api/partner/subscriptions";
-const signedBaseline = process.env.PC_FIXTURE_BASELINE === "v1.0.4";
 const purchasePage = "/partner/subscriptions/new";
 const button = (page, name) => page.getByRole("button", { name, exact: true });
 
@@ -29,9 +27,11 @@ async function json(base, endpoint, { body, token, method = body === undefined ?
   return res.json();
 }
 
-async function reviewPurchase(page, username) {
+async function reviewPurchase(page, username, productId) {
   await page.goto(origin + purchasePage);
-  await page.getByLabel("محصول", { exact: true }).locator("option").first().waitFor({ state: "attached" });
+  const product = page.getByLabel("محصول", { exact: true });
+  await product.locator("option[value='" + productId + "']").waitFor({ state: "attached" });
+  await product.selectOption(String(productId));
   await page.getByRole("textbox", { name: /^نام کاربری(?: \(a-z، عدد، _\))?$/u }).fill(username);
   await page.getByLabel("حجم (گیگ)", { exact: true }).fill("2");
   return review(page, page, /^\+?۳۱ روز$/u);
@@ -53,7 +53,7 @@ async function review(page, scope, label) {
 
 async function post(page, endpoint, action) {
   const [response] = await Promise.all([
-    page.waitForResponse(res => res.url() === origin + endpoint && res.request().method() === "POST"),
+    page.waitForResponse(res => res.url() === api + endpoint && res.request().method() === "POST"),
     action(),
   ]);
   return response;
@@ -76,25 +76,14 @@ async function verify() {
     panel_id: fixturePanel.id, plan_id: 7, name: "Upgrade plan", email_domain: "upgrade.example.test",
     price_per_gb: 1000, price_per_day: 100,
   });
-  for (const username of ["fixture_upgrade_a", "fixture_upgrade_b"]) {
-    const account = await admin("partners", { username, password });
-    await admin(`partners/${account.id}/adjust`, { asset: "toman", amount: 100000 });
-  }
+  const username = "fixture_upgrade_a";
+  const account = await admin("partners", { username, password });
+  await admin("partners/" + account.id + "/adjust", { asset: "toman", amount: 100000 });
 
-  const server = https.createServer({ key: fs.readFileSync(path.join(work, "key.pem")), cert: fs.readFileSync(path.join(work, "cert.pem")) }, (req, res) => {
-    const port = req.url.startsWith("/api/") ? 8741 : 3741;
-    const upstream = http.request({ hostname: "127.0.0.1", port, path: req.url, method: req.method, headers: req.headers }, response => {
-      res.writeHead(response.statusCode, response.headers);
-      response.pipe(res);
-    });
-    upstream.on("error", () => { res.writeHead(502); res.end(); });
-    req.pipe(upstream);
-  });
-  await new Promise(resolve => server.listen(18443, "127.0.0.1", resolve));
   const browser = await chromium.launch({ executablePath, headless: true });
   try {
-    const context = await browser.newContext({ ignoreHTTPSErrors: true });
-    await context.route("**/*", route => new URL(route.request().url()).origin === origin ? route.continue() : route.abort());
+    const context = await browser.newContext();
+    await context.route("**/*", route => [origin, api].includes(new URL(route.request().url()).origin) ? route.continue() : route.abort());
     const purchase = await context.newPage();
     const assets = new Set();
     purchase.on("response", response => {
@@ -103,28 +92,30 @@ async function verify() {
     await purchase.goto(origin);
     const form = purchase.locator("form");
     await purchase.waitForFunction(() => Object.keys(document.querySelector("form") || {}).some(key => key.startsWith("__react")));
-    await form.locator("input").nth(0).fill("fixture_upgrade_a");
+    await form.locator("input").nth(0).fill(username);
     await form.locator("input").nth(1).fill(password);
     assert.equal((await post(purchase, "/api/partner/auth/login", () => button(form, "ورود").click())).status(), 200);
     await purchase.waitForURL(origin + "/partner");
     const token = await purchase.evaluate(() => localStorage.getItem("pp_token"));
     const mine = (endpoint) => json(api, "/api/partner/" + endpoint, { token });
-    const snapshot = async () => ({
-      wallet: (await mine("me")).balance_toman,
-      ledger: (await mine("ledger")).items.map(row => [row.id, row.amount, row.asset, row.reason]),
-      subscriptions: (await mine("subscriptions")).items.map(row => [row.id, row.username]),
-      operations: (await admin("operations?limit=100")).items.map(row => [row.id, row.status]),
-      writes: (await json(panel, "/_lab/consent-writes")).count,
-    });
+    const snapshot = async () => {
+      const counters = await json(panel, "/_lab/consent-writes");
+      return {
+        wallet: (await mine("me")).balance_toman,
+        ledger: (await mine("ledger")).items.map(row => [row.id, row.amount, row.asset, row.reason, row.subscription_id]),
+        subscriptions: (await mine("subscriptions")).items.map(row => [row.id, row.username]),
+        operations: (await admin("operations?limit=100")).items.map(row => [row.id, row.status]),
+        writes: counters.count,
+        generates: counters.generate_count,
+        panelUsers: (await json(panel, "/_lab/users")).total,
+      };
+    };
     const submit = () => post(purchase, route, () => button(purchase, "ثبت اشتراک").click());
-    let sub;
-    for (const username of ["fixture_retained_one", "fixture_retained_two"]) {
-      await reviewPurchase(purchase, username);
-      const result = await submit();
-      assert.equal(result.status(), 200);
-      sub = await result.json();
-      await purchase.waitForURL(origin + "/partner/subscriptions/" + sub.id);
-    }
+    await reviewPurchase(purchase, "fixture_retained_one", product.id);
+    const retained = await submit();
+    assert.equal(retained.status(), 200);
+    const sub = await retained.json();
+    await purchase.waitForURL(origin + "/partner/subscriptions/" + sub.id);
     await json(panel, `/_lab/users/${sub.v2_user_id}/traffic`, { body: { u: 1073741824, d: 0 } });
     const reset = await context.newPage();
     await reset.goto(origin + "/partner/subscriptions/" + sub.id);
@@ -132,12 +123,11 @@ async function verify() {
     const resetRoute = route + `/${sub.id}/reset-traffic`;
     const submitReset = () => post(reset, resetRoute, () => button(dialog, "تأیید").click());
     const oldReset = await review(reset, reset, "ریست ترافیک");
-    const oldPurchase = await reviewPurchase(purchase, "fixture_after_update");
-    if (signedBaseline) {
-      assert.ok(oldReset.consent_token && oldPurchase.consent_token);
-    } else {
-      assert.ok(!oldReset.consent_token && !oldPurchase.consent_token);
-    }
+    const oldPurchase = await reviewPurchase(purchase, "fixture_after_update", product.id);
+    assert.ok(oldReset.consent_token && oldPurchase.consent_token);
+    assert.equal(oldPurchase.toman, 5100);
+    assert.equal(oldReset.toman, 1000);
+    const beforeUpgrade = await snapshot();
 
     fs.writeFileSync(path.join(work, "ready"), "");
     for (let attempt = 0; !fs.existsSync(path.join(work, "updated")); attempt++) {
@@ -145,13 +135,12 @@ async function verify() {
       await sleep(1000);
     }
     assert.ok((await adminLogin()).access_token, "installed administrator credentials did not survive Update");
-    if (signedBaseline) {
-      // v1.0.4 already signs quotes. Change the rate so both old quotes are stale.
-      await json(api, "/api/admin/products/" + product.id, {
-        token: adminToken, method: "PUT",
-        body: { name: product.name, email_domain: product.email_domain, price_per_gb: 1100, price_per_day: 100, active: true },
-      });
-    }
+    assert.deepEqual(await snapshot(), beforeUpgrade, "upgrade changed the browser account's financial state");
+    // Change the fixture rate so the quotes signed by v1.0.9 are stale.
+    await json(api, "/api/admin/products/" + product.id, {
+      token: adminToken, method: "PUT",
+      body: { name: product.name, email_domain: product.email_domain, price_per_gb: 1100, price_per_day: 100, active: true },
+    });
     const before = await snapshot();
     for (const submitOld of [submit, submitReset]) {
       const response = await submitOld();
@@ -163,20 +152,36 @@ async function verify() {
 
     assets.clear();
     await purchase.reload();
-    const newPurchase = await reviewPurchase(purchase, "fixture_after_update");
+    const newPurchase = await reviewPurchase(purchase, "fixture_after_update", product.id);
     assert.ok(newPurchase.consent_token);
-    assert.equal((await submit()).status(), 200);
+    assert.equal(newPurchase.toman, 5300);
+    const purchaseResponse = await submit();
+    assert.equal(purchaseResponse.status(), 200);
+    const created = await purchaseResponse.json();
+    await purchase.waitForURL(origin + "/partner/subscriptions/" + created.id);
     const purchased = await snapshot();
+    const oldEntries = new Set(before.ledger.map(([id]) => id));
+    const added = purchased.ledger.filter(([id]) => !oldEntries.has(id));
+    assert.deepEqual(added.map(([, amount, asset, reason, subId]) => [Number(amount), asset, reason, subId]),
+                     [[-newPurchase.toman, "toman", "create", created.id]]);
+    assert.equal(purchased.generates, before.generates + 1);
+    assert.equal(purchased.panelUsers, before.panelUsers + 1);
+    const { data: upstream } = await json(panel, "/_lab/users/" + created.v2_user_id);
+    assert.equal(upstream.email, "fixture_after_update@upgrade.example.test");
+    assert.equal(upstream.plan_id, 7);
+    assert.equal(upstream.transfer_enable, 2 * 1073741824);
+    assert.equal(upstream.expired_at, created.expired_at);
+    console.log("Browser purchase after upgrade: pre-approved 5300 toman, one ledger withdrawal, one matching subscription.");
     assert.equal(before.wallet - purchased.wallet, newPurchase.toman);
     assert.equal(purchased.ledger.length, before.ledger.length + 1);
     assert.equal(purchased.subscriptions.length, before.subscriptions.length + 1);
-    assert.ok(purchased.subscriptions.some(([, username]) => username === "fixture_after_update"));
+    assert.ok(purchased.subscriptions.some(([id, name]) => id === created.id && name === "fixture_after_update"));
     assert.ok(assets.has("script") && assets.has("stylesheet"), "production JavaScript or CSS missing");
 
     await reset.reload();
     const newReset = await review(reset, reset, "ریست ترافیک");
     assert.ok(newReset.consent_token);
-    assert.equal(newReset.toman, signedBaseline ? 1100 : 1000);
+    assert.equal(newReset.toman, 1100);
     assert.equal((await submitReset()).status(), 200);
     const settled = await snapshot();
     assert.equal(purchased.wallet - settled.wallet, newReset.toman);
@@ -186,7 +191,6 @@ async function verify() {
     fs.writeFileSync(path.join(work, "complete"), "");
   } finally {
     await browser.close();
-    server.close();
   }
 }
 

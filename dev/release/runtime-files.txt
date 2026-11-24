@@ -76,6 +76,12 @@ components/SubscriptionPurchase.module.css
 components/ui.tsx
 config/api.env.example
 config/web.env.example
+deploy/env/backend.env.example
+deploy/env/frontend.env.example
+deploy/nginx/partnerconsole.conf
+deploy/requirements.lock.txt
+deploy/systemd/partnerconsole-api.service
+deploy/systemd/partnerconsole-web.service
 install.sh
 lib/adminEntry.ts
 lib/api.ts
@@ -97,12 +103,6 @@ public/fonts/vazirmatn/vazirmatn-latin-700.woff2
 public/fonts/vazirmatn/vazirmatn-latin-ext-400.woff2
 public/fonts/vazirmatn/vazirmatn-latin-ext-500.woff2
 public/fonts/vazirmatn/vazirmatn-latin-ext-700.woff2
-release/v1.0.0/env/backend.env.example
-release/v1.0.0/env/frontend.env.example
-release/v1.0.0/nginx/partnerconsole.conf
-release/v1.0.0/requirements.lock.txt
-release/v1.0.0/systemd/partnerconsole-api.service
-release/v1.0.0/systemd/partnerconsole-web.service
 restart.sh
 scripts/backup.sh
 scripts/bootstrap.sh

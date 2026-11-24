@@ -1,4 +1,4 @@
-# Rendered by scripts/render-host-templates.sh into release/v1.0.0/generated/.
+# Rendered by scripts/render-host-templates.sh into deploy/generated/.
 # That command does not install this unit. Copying it to the host is a separate
 # operator action. PrivateTmp is off so temporary files stay in this install.
 # ProtectHome is off so the install folder may live inside a home directory.

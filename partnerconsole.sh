@@ -270,12 +270,16 @@ with tarfile.open(archive, "r:gz") as package:
                 not re.fullmatch(r"[A-Za-z0-9_\[][A-Za-z0-9_.\[\]-]*", part)
                 for part in parts)
                 or any(part in blocked for part in parts)
+                or name.startswith("deploy/generated/")
                 or name in {"config/api.env", "config/web.env"}):
             sys.exit(f"Unsafe release archive member: {name!r}")
         members[name] = member
     required = {"PACKAGE.json", "backend/pyproject.toml", "package.json", "package-lock.json",
                 "install.sh", "start.sh", "stop.sh", "scripts/common.sh", "scripts/backup.sh",
-                "scripts/domain.sh", "release/v1.0.0/requirements.lock.txt"}
+                "scripts/domain.sh", "scripts/render-host-templates.sh", "deploy/requirements.lock.txt",
+                "deploy/env/backend.env.example", "deploy/env/frontend.env.example",
+                "deploy/nginx/partnerconsole.conf", "deploy/systemd/partnerconsole-api.service",
+                "deploy/systemd/partnerconsole-web.service"}
     if not required.issubset(members):
         sys.exit("The release archive is missing required files.")
     if json.load(package.extractfile(members.pop("PACKAGE.json"))) != {"tag": tag, "commit": commit}:
@@ -481,22 +485,26 @@ apply_permissions() {
   find "$APP_ROOT" \
     \( -path "$APP_ROOT/data" -o -path "$APP_ROOT/logs" -o -path "$APP_ROOT/runtime" \
        -o -path "$APP_ROOT/backups" -o -path "$APP_ROOT/.release" -o -path "$APP_ROOT/.home" \
-       -o -path "$APP_ROOT/config" -o -path "$APP_ROOT/dev" -o -path "$APP_ROOT/.github" \) -prune \
+       -o -path "$APP_ROOT/config" -o -path "$APP_ROOT/dev" -o -path "$APP_ROOT/.github" \
+       -o -path "$APP_ROOT/deploy/generated" -o -path "$APP_ROOT/release/v1.0.0/generated" \) -prune \
     -o -type f -perm -0100 -print > "$exec_list"
   find "$APP_ROOT" \
     \( -path "$APP_ROOT/data" -o -path "$APP_ROOT/logs" -o -path "$APP_ROOT/runtime" \
        -o -path "$APP_ROOT/backups" -o -path "$APP_ROOT/.release" -o -path "$APP_ROOT/.home" \
-       -o -path "$APP_ROOT/config" -o -path "$APP_ROOT/dev" -o -path "$APP_ROOT/.github" \) -prune \
+       -o -path "$APP_ROOT/config" -o -path "$APP_ROOT/dev" -o -path "$APP_ROOT/.github" \
+       -o -path "$APP_ROOT/deploy/generated" -o -path "$APP_ROOT/release/v1.0.0/generated" \) -prune \
     -o -exec chown -h root:"$gid" {} +
   find "$APP_ROOT" \
     \( -path "$APP_ROOT/data" -o -path "$APP_ROOT/logs" -o -path "$APP_ROOT/runtime" \
        -o -path "$APP_ROOT/backups" -o -path "$APP_ROOT/.release" -o -path "$APP_ROOT/.home" \
-       -o -path "$APP_ROOT/config" -o -path "$APP_ROOT/dev" -o -path "$APP_ROOT/.github" \) -prune \
+       -o -path "$APP_ROOT/config" -o -path "$APP_ROOT/dev" -o -path "$APP_ROOT/.github" \
+       -o -path "$APP_ROOT/deploy/generated" -o -path "$APP_ROOT/release/v1.0.0/generated" \) -prune \
     -o -type d -exec chmod 750 {} +
   find "$APP_ROOT" \
     \( -path "$APP_ROOT/data" -o -path "$APP_ROOT/logs" -o -path "$APP_ROOT/runtime" \
        -o -path "$APP_ROOT/backups" -o -path "$APP_ROOT/.release" -o -path "$APP_ROOT/.home" \
-       -o -path "$APP_ROOT/config" -o -path "$APP_ROOT/dev" -o -path "$APP_ROOT/.github" \) -prune \
+       -o -path "$APP_ROOT/config" -o -path "$APP_ROOT/dev" -o -path "$APP_ROOT/.github" \
+       -o -path "$APP_ROOT/deploy/generated" -o -path "$APP_ROOT/release/v1.0.0/generated" \) -prune \
     -o -type f -exec chmod 640 {} +
   while IFS= read -r file; do
     [[ -n "$file" && -f "$file" ]] || continue
@@ -506,7 +514,8 @@ apply_permissions() {
   find "$APP_ROOT" \
     \( -path "$APP_ROOT/data" -o -path "$APP_ROOT/logs" -o -path "$APP_ROOT/runtime" \
        -o -path "$APP_ROOT/backups" -o -path "$APP_ROOT/.release" -o -path "$APP_ROOT/.home" \
-       -o -path "$APP_ROOT/dev" -o -path "$APP_ROOT/.github" \) -prune \
+       -o -path "$APP_ROOT/dev" -o -path "$APP_ROOT/.github" \
+       -o -path "$APP_ROOT/deploy/generated" -o -path "$APP_ROOT/release/v1.0.0/generated" \) -prune \
     -o -type f -name '*.sh' -exec chmod 750 {} +
   if [[ -d "$APP_ROOT/.next" ]]; then
     install -d -o "$APP_USER" -g "$gid" -m 700 "$APP_ROOT/.next/cache"
@@ -1192,6 +1201,9 @@ setup_app() (
     1)
       local admin_password
       assert_root_file "$APP_ROOT/scripts/bootstrap.sh"
+      if [[ ! -d "$APP_ROOT/deploy/generated" ]]; then
+        PP_RENDER_ONLY=1 PP_ROOT="$APP_ROOT" run_root_script "$APP_ROOT/scripts/render-host-templates.sh" "$APP_USER" || return 1
+      fi
       admin_password="$(ask_admin_password)" || return 1
       runuser -u "$APP_USER" -- env ADMIN_PASSWORD="$admin_password" bash "$APP_ROOT/scripts/bootstrap.sh" --confirm-database
       unset admin_password
