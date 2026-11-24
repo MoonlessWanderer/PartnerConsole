@@ -45,6 +45,12 @@ jobs:
           tar -tzf "$RUNNER_TEMP/assets/partnerconsole-$RELEASE_VERSION.tar.gz" | LC_ALL=C sort > "$RUNNER_TEMP/actual"
           { printf 'PACKAGE.json\n'; cat dev/release/runtime-files.txt; } | LC_ALL=C sort > "$RUNNER_TEMP/expected"
           diff -u "$RUNNER_TEMP/expected" "$RUNNER_TEMP/actual"
+          grep -Fx 'config/api.env.example' "$RUNNER_TEMP/actual"
+          grep -Fx 'config/web.env.example' "$RUNNER_TEMP/actual"
+          if grep -E '^(deploy/env/|release/)' "$RUNNER_TEMP/actual"; then
+            echo "::error::The package contains an obsolete deployment path."
+            exit 1
+          fi
           ! grep -E '(^|/)(dev|tests|data|runtime|backups|\.git|\.github)(/|$)' "$RUNNER_TEMP/actual"
           mkdir -p "$RUNNER_TEMP/harness"
           cp dev/tests/installer/{fresh-install-linux-check.sh,install-recovery-linux-check.sh,release-http-fixture.sh,release-tty.py} "$RUNNER_TEMP/harness/"
@@ -121,6 +127,10 @@ jobs:
             "$RUNNER_TEMP/candidate" "$GITHUB_SHA" "$RECOVERY_SCENARIO"
 
   migration:
+    strategy:
+      fail-fast: false
+      matrix:
+        source: [online, archive]
     needs: assets
     runs-on: ubuntu-24.04
     timeout-minutes: 40
@@ -146,9 +156,11 @@ jobs:
           sudo rm -rf /etc/mysql /var/lib/mysql /var/log/mysql
       - name: Install the pinned browser driver
         run: npm install --prefix "$RUNNER_TEMP/upgrade-browser" --no-save --package-lock=false --no-audit --no-fund playwright-core@1.56.1
-      - name: Upgrade public v1.0.9 locally, test the installed online command, purchase, and restore
+      - name: Upgrade public v1.0.9 through the selected source, purchase, and restore
+        env:
+          UPGRADE_SOURCE: ${{ matrix.source }}
         run: |
           sudo PARTNERCONSOLE_DISPOSABLE_HOST=1 BROWSER_USER="$(id -un)" \
             PLAYWRIGHT_MODULE="$RUNNER_TEMP/upgrade-browser/node_modules/playwright-core" \
             bash dev/tests/installer/release-migration-linux-check.sh \
-            "$RUNNER_TEMP/candidate-a" "$RUNNER_TEMP/candidate-b"
+            "$RUNNER_TEMP/candidate-a" "$RUNNER_TEMP/candidate-b" "$UPGRADE_SOURCE"

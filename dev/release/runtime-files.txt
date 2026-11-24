@@ -76,8 +76,6 @@ components/SubscriptionPurchase.module.css
 components/ui.tsx
 config/api.env.example
 config/web.env.example
-deploy/env/backend.env.example
-deploy/env/frontend.env.example
 deploy/nginx/partnerconsole.conf
 deploy/requirements.lock.txt
 deploy/systemd/partnerconsole-api.service

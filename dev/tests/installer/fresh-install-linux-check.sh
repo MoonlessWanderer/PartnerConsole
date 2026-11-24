@@ -59,7 +59,8 @@ for unit in api web; do
 done
 grep -Fq 'proxy_pass http://127.0.0.1:8741;' "$app/deploy/generated/partnerconsole.conf"
 ! grep -REq '@ROOT@|@SERVICE_USER@' "$app/deploy/generated"
-[[ ! -e "$app/release" ]]
+[[ ! -e "$app/release" && ! -e "$app/deploy/env" ]]
+[[ -f "$app/config/api.env.example" && -f "$app/config/web.env.example" ]]
 echo 'Python dependencies installed with the deploy lockfile and Nginx/systemd templates rendered in deploy/generated.'
 for excluded in dev tests .github .git; do [[ ! -e "$app/$excluded" ]]; done
 curl -fsS http://127.0.0.1:3741/ | grep -F '<title>Partner Console</title>' >/dev/null

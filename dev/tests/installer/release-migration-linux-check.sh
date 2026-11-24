@@ -8,6 +8,8 @@ tools="$(cd "$(dirname "$0")" && pwd)"
 repo="$(cd "$tools/../../.." && pwd)"
 a="$(realpath "$1")"
 b="$(realpath "$2")"
+mode="${3:-archive}"
+[[ "$mode" == online || "$mode" == archive ]]
 tag_a="$(sed -n 's/^RELEASE_TAG="\(.*\)"$/\1/p' "$a/partnerconsole.sh")"
 tag_b="$(sed -n 's/^RELEASE_TAG="\(.*\)"$/\1/p' "$b/partnerconsole.sh")"
 dpkg --compare-versions "${tag_a#v}" gt 1.0.9
@@ -130,14 +132,27 @@ runtime() {
   version_is "${tag#v}"
 }
 publish_fixture "$tag_a"
-block_release_feed
-update_from_a=(sudo bash "$a/partnerconsole.sh" update --from-archive "$a/partnerconsole-$tag_a.tar.gz")
 cp "$app/.release/current" "$work/public-marker"
-# Use the real, differently versioned candidate B archive with candidate A's installer.
-# Already root on this disposable runner, including the log redirect.
-# shellcheck disable=SC2024
-if sudo bash "$a/partnerconsole.sh" update --from-archive "$b/partnerconsole-$tag_b.tar.gz" > "$work/mismatch.log" 2>&1; then exit 1; fi
-grep -F "Local archive checksum mismatch for $tag_a:" "$work/mismatch.log"
+if [[ "$mode" == archive ]]; then
+  block_release_feed
+  update_from_a=(sudo bash "$a/partnerconsole.sh" update --from-archive "$a/partnerconsole-$tag_a.tar.gz")
+  # Candidate B is valid but does not match candidate A's installer.
+  # shellcheck disable=SC2024
+  if sudo bash "$a/partnerconsole.sh" update --from-archive "$b/partnerconsole-$tag_b.tar.gz" > "$work/mismatch.log" 2>&1; then exit 1; fi
+  grep -F "Local archive checksum mismatch for $tag_a:" "$work/mismatch.log"
+  printf 'corrupt local archive\n' > "$work/corrupt-local.tar.gz"
+  # shellcheck disable=SC2024
+  if sudo bash "$a/partnerconsole.sh" update --from-archive "$work/corrupt-local.tar.gz" > "$work/corrupt-a.log" 2>&1; then exit 1; fi
+  grep -F "Local archive checksum mismatch for $tag_a:" "$work/corrupt-a.log"
+else
+  update_from_a=(sudo partnerconsole update)
+  feed_archive="$PC_RELEASE_FIXTURE_DIR/$tag_a/partnerconsole-$tag_a.tar.gz"
+  printf 'corrupt online archive\n' > "$feed_archive"
+  if "${update_from_a[@]}" > "$work/corrupt-a.log" 2>&1; then exit 1; fi
+  grep -F "Application package checksum mismatch for $tag_a." "$work/corrupt-a.log"
+  cp "$a/partnerconsole-$tag_a.tar.gz" "$feed_archive"
+fi
+version_is 1.0.9
 cmp "$work/public-marker" "$app/.release/current"
 preserved
 old_path=release/v1.0.0/nginx/partnerconsole.conf
@@ -163,13 +178,23 @@ personal_unchanged() {
 }
 "${update_from_a[@]}"
 runtime "$tag_a" "$a"
-[[ ! -s "$PC_RELEASE_FIXTURE_DIR/requests" ]]
-archive_test_had_no_requests
+if [[ "$mode" == archive ]]; then
+  [[ ! -s "$PC_RELEASE_FIXTURE_DIR/requests" ]]
+  archive_test_had_no_requests
+  rm -- "$PC_RELEASE_FIXTURE_DIR/block-repository"
+else
+  grep -Fxq "https://api.github.com/repos/MoonlessWanderer/PartnerConsole/releases/latest" "$PC_RELEASE_FIXTURE_DIR/requests"
+  grep -Fxq "https://github.com/MoonlessWanderer/PartnerConsole/releases/download/$tag_a/partnerconsole-$tag_a.tar.gz" "$PC_RELEASE_FIXTURE_DIR/requests"
+fi
 preserved
-for managed in env/backend.env.example env/frontend.env.example nginx/partnerconsole.conf requirements.lock.txt \
+for managed in nginx/partnerconsole.conf requirements.lock.txt \
                systemd/partnerconsole-api.service systemd/partnerconsole-web.service; do
   [[ ! -e "$app/release/v1.0.0/$managed" && -f "$app/deploy/$managed" ]]
 done
+for obsolete in backend.env.example frontend.env.example; do
+  [[ ! -e "$app/release/v1.0.0/env/$obsolete" && ! -e "$app/deploy/env/$obsolete" ]]
+done
+[[ -f "$app/config/api.env.example" && -f "$app/config/web.env.example" ]]
 cmp "$work/original" "$app/deploy/nginx/partnerconsole.conf"
 personal_unchanged
 bash "$app/scripts/render-host-templates.sh" ppv1
@@ -177,7 +202,7 @@ grep -Fxq "WorkingDirectory=$app" "$app/deploy/generated/partnerconsole-api.serv
 grep -Fxq "WorkingDirectory=$app" "$app/deploy/generated/partnerconsole-web.service"
 cmp "$app/deploy/nginx/partnerconsole.conf" "$app/deploy/generated/partnerconsole.conf"
 personal_unchanged
-echo 'Public v1.0.9 to A via local archive: refused the locally edited managed template, moved managed files, and preserved the personal file, config, key, accounts, wallet, ledger and subscription.'
+echo "Public v1.0.9 to A ($mode): refused the locally edited managed template, removed obsolete samples, and preserved the personal file, config, key, accounts, wallet, ledger and subscription."
 touch "$work/browser/updated"
 wait_for_browser complete
 wait "$probe_pid"
@@ -185,7 +210,6 @@ unset probe_pid
 cat "$work/browser.log"
 
 # Check the normal installed online command separately with the next fixture.
-rm -- "$PC_RELEASE_FIXTURE_DIR/block-repository"
 publish_fixture "$tag_b"
 archive="$PC_RELEASE_FIXTURE_DIR/$tag_b/partnerconsole-$tag_b.tar.gz"
 mv "$archive" "$work/good.tar.gz"

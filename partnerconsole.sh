@@ -287,7 +287,7 @@ with tarfile.open(archive, "r:gz") as package:
     required = {"PACKAGE.json", "backend/pyproject.toml", "package.json", "package-lock.json",
                 "install.sh", "start.sh", "stop.sh", "scripts/common.sh", "scripts/backup.sh",
                 "scripts/domain.sh", "scripts/render-host-templates.sh", "deploy/requirements.lock.txt",
-                "deploy/env/backend.env.example", "deploy/env/frontend.env.example",
+                "config/api.env.example", "config/web.env.example",
                 "deploy/nginx/partnerconsole.conf", "deploy/systemd/partnerconsole-api.service",
                 "deploy/systemd/partnerconsole-web.service"}
     if not required.issubset(members):
