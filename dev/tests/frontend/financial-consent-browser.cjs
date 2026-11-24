@@ -7,13 +7,37 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE);
 const [version, artifacts, scope] = process.argv.slice(2);
 assert.ok(["baseline", "hotfix"].includes(version));
 const baseline = version === "baseline";
-assert.ok(scope === undefined || (!baseline && ["account-switch", "purchase-reprice", "purchase-doubleclick"].includes(scope)));
-const web = "http://127.0.0.1:13741", api = "http://127.0.0.1:18741", lab = "http://127.0.0.1:18788";
+assert.ok(scope === undefined || (!baseline && ["account-switch", "purchase-reprice", "purchase-doubleclick", "purchase-regression"].includes(scope)));
+const web = process.env.PARTNER_TEST_WEB ?? "http://127.0.0.1:13741";
+const api = process.env.PARTNER_TEST_API ?? "http://127.0.0.1:18741";
+const lab = process.env.PARTNER_TEST_PANEL ?? "http://127.0.0.1:18788";
 const traces = [], checks = [];
 const password = crypto.randomBytes(24).toString("base64url");
 const signal = AbortSignal.timeout(110000);
 const button = (page, name) => page.getByRole("button", { name, exact: true });
 const field = (page, name) => page.getByLabel(name, { exact: true });
+
+const usernameField = (page) => field(page, "نام کاربری").or(field(page, "نام کاربری (a-z، عدد، _)"));
+const reviewValue = (page) => page.locator("dt").filter({ hasText: /^برداشت از کیف پول$/ })
+  .locator("xpath=../dd").or(page.getByText(/^مبلغ:/));
+const creditValue = (page, label) => page.locator("dt").filter({ hasText: label }).locator("xpath=../dd");
+async function assertCredit(page, oldText) {
+  const updated = creditValue(page, /^اعتبار حجم مصرفی$/);
+  if (await updated.count()) {
+    assert.equal("از اعتبار: " + await updated.textContent() + " و " +
+      await creditValue(page, /^اعتبار روز مصرفی$/).textContent(), oldText);
+  } else assert.equal(await page.getByText(/^از اعتبار:/).textContent(), oldText);
+}
+async function openPurchase(page) {
+  const direct = page.locator("aside").getByRole("link", { name: "ساخت اشتراک", exact: true });
+  if (await direct.count()) {
+    await direct.click();
+    return;
+  }
+  await page.locator("aside").getByRole("link", { name: "اشتراک‌ها", exact: true }).click();
+  await page.getByRole("main").getByRole("link", { name: "ساخت اشتراک", exact: true }).click();
+}
+
 
 async function request(origin, route, body, token, method) {
   const response = await fetch(origin + route, {
@@ -47,7 +71,7 @@ function response(page, route) {
 }
 
 async function screen(page, file) {
-  await page.screenshot({ path: path.join(artifacts, file), mask: [page.getByText(/token=/)] });
+  await page.screenshot({ path: path.join(artifacts, file), mask: [page.getByText(/token=/), page.getByRole("textbox", { name: "لینک اشتراک", exact: true })] });
 }
 
 async function login(page, username) {
@@ -74,24 +98,24 @@ async function purchase(page, username, gb = 2) {
 
 async function fillPurchase(page, username, gb) {
   await field(page, "محصول").locator("option").first().waitFor({ state: "attached" });
-  await field(page, "نام کاربری (a-z، عدد، _)").fill(username);
+  await usernameField(page).fill(username);
   await field(page, "حجم (گیگ)").fill(String(gb));
   const pending = response(page, "/api/partner/subscriptions/quote");
-  await button(page, "+۳۱ روز").click();
+  await button(page, "+۳۱ روز").or(button(page, "۳۱ روز")).click();
   const quote = await (await pending).json();
-  await page.getByText(/^مبلغ:/).waitFor();
+  await reviewValue(page).waitFor();
   return quote;
 }
 
 function accountLabel(page, account) {
-  return page.locator("aside").getByText(account.username, { exact: true });
+  return page.locator("aside, header").getByText(account.username, { exact: true }).filter({ visible: true });
 }
 
 async function switchAccount(page, shared, first, second, snapshot) {
   const oldName = "fixture_switch";
   const stale = await purchase(page, oldName);
   const submit = button(page, "ثبت اشتراک");
-  const amount = page.getByText(/^مبلغ:/);
+  const amount = reviewValue(page);
   assert.equal(stale.affordable, true);
   assert.equal(stale.toman, 5100);
   assert.equal(await accountLabel(page, first).isVisible(), true);
@@ -118,7 +142,7 @@ async function switchAccount(page, shared, first, second, snapshot) {
   const isPurchase = (request) => request.method() === "POST" && request.url() === api + "/api/partner/subscriptions";
   const requests = [];
   page.on("request", request => { if (isPurchase(request)) requests.push(request); });
-  const name = field(page, "نام کاربری (a-z، عدد، _)");
+  const name = usernameField(page);
   const oldReview = await name.isVisible() && await name.inputValue() === oldName;
   const confirmAvailable = oldReview && await submit.isVisible() && await submit.isEnabled() && await amount.isVisible();
 
@@ -212,8 +236,10 @@ async function submitWithDoubleClick(page) {
 }
 
 function assertSingleConfirmation(evidence) {
-  assert.deepEqual(evidence.waiting, { requests: 1, delivered: 0, upstreamStatus: 200, disabled: true,
-    label: "در حال ساخت…", path: "/partner/subscriptions/new" });
+  const { label, ...waiting } = evidence.waiting;
+  assert.ok(["در حال ساخت…", "در حال بررسی…"].includes(label));
+  assert.deepEqual(waiting, { requests: 1, delivered: 0, upstreamStatus: 200, disabled: true,
+    path: "/partner/subscriptions/new" });
   assert.equal(evidence.requests, 1);
   assert.deepEqual(evidence.delivered, [200]);
 }
@@ -222,8 +248,7 @@ async function repricePurchase(page, context, owner, product, snapshot) {
   const route = "/api/partner/subscriptions", quoteRoute = route + "/quote";
   const target = "fixture_reprice", other = "fixture_credit_spend";
   const submit = button(page, "ثبت اشتراک");
-  const currentAmount = page.getByText(/^مبلغ:/);
-  const currentCredit = page.getByText(/^از اعتبار:/);
+  const currentAmount = reviewValue(page);
   const selectedProduct = field(page, "محصول").locator("option:checked");
   const funding = (quote) => [quote.toman, Number(quote.gb_from_credit), quote.days_from_credit];
   const credit = (state) => state.first.credits.map(([id, gb, days]) => [id, Number(gb), days]);
@@ -234,10 +259,10 @@ async function repricePurchase(page, context, owner, product, snapshot) {
       [asset, Number(amount), reason]).sort((a, b) => a[0].localeCompare(b[0]));
   };
   const readReview = async (amount, usedCredit) => {
-    await page.getByText(amount, { exact: true }).waitFor();
-    assert.equal(await currentCredit.textContent(), usedCredit);
+    await currentAmount.filter({ hasText: amount.replace("مبلغ: ", "") }).waitFor();
+    await assertCredit(page, usedCredit);
     assert.equal(await submit.isEnabled(), true);
-    return { amount: await currentAmount.textContent(), credit: await currentCredit.textContent(),
+    return { amount: await currentAmount.textContent(), credit: usedCredit,
       product: await selectedProduct.textContent(), confirmEnabled: true };
   };
   const useSession = async (result) => {
@@ -265,7 +290,7 @@ async function repricePurchase(page, context, owner, product, snapshot) {
     await useSession(result);
     return result.json();
   };
-  const wallet = page.getByText("موجودی تومان", { exact: true }).locator("..").getByText(/^[۰-۹,]+ تومان$/);
+  const wallet = page.getByText("موجودی تومان", { exact: true }).or(page.getByText("موجودی کیف پول", { exact: true })).locator("..").getByText(/^[۰-۹,]+ تومان$/);
 
   const initial = await snapshot();
   assert.equal(initial.first.wallet, 100000);
@@ -276,7 +301,7 @@ async function repricePurchase(page, context, owner, product, snapshot) {
   assert.equal(initialDashboard.balance_toman, initial.first.wallet);
   await wallet.waitFor();
   assert.equal(await wallet.textContent(), "۱۰۰,۰۰۰ تومان");
-  await nav("ساخت اشتراک").click();
+  await openPurchase(page);
   await page.waitForURL(web + "/partner/subscriptions/new");
   assert.deepEqual(credit(initial), [[product.id, 7, 37]]);
   const posts = [];
@@ -384,7 +409,9 @@ async function repricePurchase(page, context, owner, product, snapshot) {
   assert.equal(dashboard.balance_toman, settled.first.wallet, "dashboard API returned a stale wallet balance");
   assert.equal(observed.dashboard.wallet, "۹۰,۵۰۰ تومان", "dashboard rendered a stale wallet balance");
 
-  const catalog = await readPage(nav("ساخت اشتراک"), "/partner/subscriptions/new", "/api/partner/products");
+  const catalogRead = page.waitForResponse(result => result.url() === api + "/api/partner/products" && result.request().method() === "GET");
+  await openPurchase(page);
+  const catalog = await (await catalogRead).json();
   const catalogProduct = catalog.items.find(item => item.id === product.id);
   const productSelect = field(page, "محصول");
   await productSelect.selectOption(String(product.id));
@@ -396,9 +423,9 @@ async function repricePurchase(page, context, owner, product, snapshot) {
   assert.match(observed.product.label, /اعتبار ۰ گیگ \/ ۰ روز$/, "the purchase form rendered a stale credit balance");
 
   const list = await readPage(nav("اشتراک‌ها"), "/partner/subscriptions", route);
-  const management = page.getByRole("link", { name: "مدیریت", exact: true });
+  const management = page.getByRole("link", { name: /^مدیریت(?: |$)/ });
   await management.first().waitFor();
-  const rowFor = (username) => page.getByRole("row").filter({ has: page.getByRole("cell", { name: username, exact: true }) });
+  const rowFor = (username) => page.getByRole("row").filter({ has: page.getByText(username, { exact: true }) });
   const targetRow = rowFor(target);
   observed.list = { apiIds: list.items.map(item => item.id), total: list.total,
     purchaseRows: await targetRow.count(), independentRows: await rowFor(other).count() };
@@ -409,10 +436,10 @@ async function repricePurchase(page, context, owner, product, snapshot) {
   assert.equal(await management.count(), 2);
 
   const detailPath = "/partner/subscriptions/" + storedId;
-  const openDetails = targetRow.getByRole("link", { name: "مدیریت", exact: true });
+  const openDetails = targetRow.getByRole("link", { name: /^مدیریت(?: |$)/ });
   assert.equal(await openDetails.getAttribute("href"), detailPath);
   const opened = await readPage(openDetails, detailPath, route + "/" + storedId);
-  const title = page.getByRole("heading", { name: target, exact: true });
+  const title = page.getByRole("main").getByText(target, { exact: true });
   await title.waitFor();
   observed.detail = { id: opened.id, username: await title.textContent(), path: new URL(page.url()).pathname };
   assert.equal(opened.id, storedId);
@@ -496,8 +523,8 @@ async function run() {
         // 2 GB and 31 days minus 1 GB and 5 days of credit, at 1000 toman/GB and 100 toman/day.
         const approved = [quote.toman, Number(quote.gb_from_credit), quote.days_from_credit];
         assert.deepEqual(approved, [3600, 1, 5]);
-        await page.getByText("مبلغ: ۳,۶۰۰ تومان", { exact: true }).waitFor();
-        await page.getByText("از اعتبار: ۱ گیگ و ۵ روز", { exact: true }).waitFor();
+        await reviewValue(page).filter({ hasText: "۳,۶۰۰ تومان" }).waitFor();
+        await assertCredit(page, "از اعتبار: ۱ گیگ و ۵ روز");
         assert.deepEqual(await snapshotFor(owner), before);
         const evidence = await submitWithDoubleClick(page);
         const { created } = evidence;
@@ -524,16 +551,17 @@ async function run() {
         await profile.close();
       }
     }
-    if (scope === "purchase-doubleclick") {
+    if (scope === "purchase-doubleclick" || scope === "purchase-regression") {
       await checkDoubleClick();
-      return;
+      if (scope === "purchase-doubleclick") return;
+      await checkReprice();
     }
     const first = await account("fixture_partner_a"), second = await account("fixture_partner_b");
     const snapshot = () => snapshotFor(first, second);
     const shared = await context();
     const page = await shared.newPage();
     await login(page, first.username);
-    if (scope === "account-switch") {
+    if (scope === "account-switch" || scope === "purchase-regression") {
       await switchAccount(page, shared, first, second, snapshot);
       return;
     }
@@ -590,7 +618,7 @@ async function run() {
       assert.deepEqual(await snapshot(), beforeSwitch);
       await purchase(secondTab, "fixture_refresh");
       await secondTab.reload();
-      assert.equal(await field(secondTab, "نام کاربری (a-z، عدد، _)").inputValue(), "");
+      assert.equal(await usernameField(secondTab).inputValue(), "");
       assert.equal(await button(secondTab, "ثبت اشتراک").isEnabled(), false);
       const fresh = await purchase(secondTab, "fixture_switch");
       assertSingleConfirmation(await submitWithDoubleClick(secondTab));

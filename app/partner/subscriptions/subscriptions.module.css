@@ -1,0 +1,286 @@
+.listHeader {
+  container: subscriptions-header / inline-size;
+}
+
+.headerGrid {
+  @apply grid items-center gap-x-4 gap-y-3 mb-4;
+  grid-template-columns: minmax(0, 1fr) max-content;
+  grid-template-areas: "title create" "search search";
+}
+
+.headerGrid h2 {
+  @apply text-2xl font-bold leading-snug sm:text-3xl;
+  grid-area: title;
+}
+
+.createAction {
+  @apply inline-flex min-h-11 items-center justify-center gap-2 bg-violet-700 px-4 text-sm font-bold text-white transition-colors hover:bg-violet-800;
+  grid-area: create;
+  justify-self: end;
+  border-radius: 0.625rem;
+}
+
+.createAction svg {
+  @apply shrink-0;
+}
+
+.searchForm {
+  grid-area: search;
+  justify-self: center;
+  width: min(100%, 20rem);
+}
+
+@container subscriptions-header (min-width: 42rem) {
+  .headerGrid {
+    grid-template-columns: max-content minmax(0, 1fr) max-content;
+    grid-template-areas: "title search create";
+  }
+}
+
+.searchControl {
+  @apply grid border border-slate-200 bg-white text-sm text-slate-900;
+  grid-template-columns: 2.75rem minmax(0, 1fr);
+  border-radius: 0.625rem;
+}
+
+.searchControl input {
+  @apply min-h-11 w-full min-w-0 bg-transparent px-3 text-left font-normal;
+  grid-column: 2;
+  grid-row: 1;
+  border-radius: inherit;
+  color: inherit;
+}
+
+.searchControl input::-webkit-search-cancel-button {
+  appearance: none;
+  display: none;
+}
+
+.searchAction {
+  @apply grid min-h-11 place-items-center text-slate-600 hover:text-violet-800;
+  grid-column: 1;
+  grid-row: 1;
+  border-radius: inherit;
+}
+
+.searchIcon {
+  @apply relative rounded-full border-2;
+  width: 0.875rem;
+  height: 0.875rem;
+  border-color: currentColor;
+  transform: translate(-2px, -2px);
+}
+
+.searchIcon::after {
+  position: absolute;
+  top: 100%;
+  left: 100%;
+  width: 0.4375rem;
+  height: 2px;
+  border-radius: 1px;
+  background: currentColor;
+  transform: translate(-1px, -1px) rotate(45deg);
+  transform-origin: left center;
+  content: "";
+}
+
+.clearIcon {
+  @apply text-2xl leading-none;
+}
+
+.searchControl input:focus-visible,
+.searchAction:focus-visible {
+  @apply outline outline-2 outline-violet-700;
+  outline-offset: -3px;
+}
+
+.createAction:focus-visible,
+.manageLink:focus-visible,
+.pagination button:focus-visible {
+  @apply outline outline-2 outline-violet-700;
+  outline-offset: 3px;
+}
+
+.panel {
+  @apply overflow-hidden border border-slate-200 bg-white;
+  border-radius: 0.875rem;
+}
+
+.panel:focus-visible {
+  @apply outline outline-2 outline-offset-2 outline-violet-700;
+}
+
+.count {
+  @apply px-4 py-3 text-sm font-bold text-slate-900;
+}
+
+.error {
+  @apply p-4;
+}
+
+.empty {
+  @apply border-t border-slate-200 px-4 py-6 text-sm text-slate-600;
+}
+
+.table {
+  @apply min-w-0;
+}
+
+.table :is(th, td) {
+  @apply border-slate-200 p-3 text-start whitespace-normal;
+  overflow-wrap: anywhere;
+}
+
+.table thead th {
+  @apply bg-slate-50 text-slate-600;
+}
+
+.table :is(th, td):first-child {
+  @apply ps-4;
+}
+
+.table :is(th, td):last-child {
+  @apply pe-4;
+}
+
+.table tbody th {
+  @apply bg-transparent text-inherit;
+}
+
+.table tbody tr:last-child > * {
+  border-block-end: 0;
+}
+
+.table .userColumn {
+  @apply text-left;
+}
+
+.usernameGroup {
+  @apply flex min-w-0 items-center gap-1;
+}
+
+.username {
+  @apply min-w-0 font-bold;
+}
+
+.activeIcon {
+  @apply shrink-0 text-emerald-800;
+}
+
+.statusLabel {
+  @apply inline-block max-w-full rounded-md bg-amber-100 px-2 py-1 text-xs font-medium text-amber-900;
+}
+
+.manageLink,
+.pagination button {
+  @apply inline-flex min-h-11 items-center bg-violet-50 px-3 text-sm font-bold text-violet-800;
+  border-radius: 0.625rem;
+}
+
+.manageLink:hover,
+.pagination button:hover:enabled {
+  @apply underline underline-offset-4;
+}
+
+.mobileList {
+  @apply hidden;
+}
+
+.pagination {
+  @apply flex items-center justify-between gap-3 border-t border-slate-200 p-3;
+}
+
+.pagination button:disabled {
+  @apply bg-slate-100 text-slate-500;
+}
+
+@media (max-width: 42.5rem) {
+  .searchForm {
+    @apply w-full;
+  }
+
+  .panel {
+    @apply overflow-visible rounded-none border-0 bg-transparent;
+  }
+
+  .count {
+    @apply mb-2 p-0;
+  }
+
+  .error {
+    @apply p-0;
+  }
+
+  .empty,
+  .mobileList,
+  .pagination {
+    @apply rounded-xl border border-slate-200 bg-white;
+  }
+
+  .table {
+    @apply hidden;
+  }
+
+  .mobileList {
+    @apply m-0 block list-none p-0;
+  }
+
+  .mobileList > li + li {
+    @apply border-t border-slate-200;
+  }
+
+  .rowLink {
+    @apply grid min-h-11 items-center gap-x-3 px-3 py-2 text-sm leading-snug text-slate-900 no-underline;
+    grid-template-columns: 1rem max-content minmax(0, 1fr);
+    grid-template-areas: "chevron meta identity";
+  }
+
+  .rowLink:focus-visible {
+    @apply rounded-lg outline outline-2 outline-violet-700;
+    outline-offset: -2px;
+  }
+
+  .rowIdentity,
+  .rowMeta {
+    @apply grid gap-1 text-slate-600;
+  }
+
+  .rowIdentity {
+    @apply min-w-0 text-left;
+    grid-area: identity;
+  }
+
+  .rowIdentity .username,
+  .rowProduct {
+    @apply min-w-0 truncate;
+  }
+
+  .rowIdentity .username {
+    @apply text-base text-slate-900;
+  }
+
+  .rowMeta {
+    @apply justify-items-start whitespace-nowrap text-right;
+    grid-area: meta;
+  }
+
+  .rowMeta .statusLabel {
+    @apply rounded-none bg-transparent p-0;
+    font-size: inherit;
+  }
+
+  .rowChevron {
+    @apply text-slate-600;
+    grid-area: chevron;
+  }
+
+  .pagination {
+    @apply mt-3;
+  }
+}
+
+@media (max-width: 33.75rem) {
+  .createAction {
+    @apply px-3;
+  }
+}

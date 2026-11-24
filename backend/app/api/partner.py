@@ -428,10 +428,20 @@ def ledger(
     query = (
         select(WalletLedger)
         .where(WalletLedger.partner_id == partner.id)
-        .options(joinedload(WalletLedger.partner), joinedload(WalletLedger.product))
+        .options(joinedload(WalletLedger.partner), joinedload(WalletLedger.product), joinedload(WalletLedger.subscription))
     )
     total = db.scalar(
         select(func.count()).select_from(WalletLedger).where(WalletLedger.partner_id == partner.id)
     ) or 0
     rows = db.execute(query.order_by(WalletLedger.id.desc()).limit(limit).offset(offset)).unique().scalars().all()
-    return {"items": [present_ledger(row) for row in rows], "total": total}
+    items = []
+    for row in rows:
+        item = present_ledger(row)
+        sub = row.subscription
+        if sub is not None and sub.partner_id == partner.id:
+            item["subscription_username"] = sub.username
+        else:
+            item["subscription_id"] = None
+            item["subscription_username"] = None
+        items.append(item)
+    return {"items": items, "total": total}

@@ -15,12 +15,12 @@ The application uses Next.js 15, React 19, TypeScript, FastAPI, Python, SQLAlche
 
 ## Installation
 
-The application and installer are both **v1.0.7**. Download the installer and checksum file from the [v1.0.7 Release](https://github.com/MoonlessWanderer/PartnerConsole/releases/tag/v1.0.7).
+The application and installer are both **v1.0.8**. Download the installer and checksum file from the [v1.0.8 Release](https://github.com/MoonlessWanderer/PartnerConsole/releases/tag/v1.0.8).
 
 ```bash
 work_dir="$(mktemp -d)"
 cd "$work_dir"
-release_url=https://github.com/MoonlessWanderer/PartnerConsole/releases/download/v1.0.7
+release_url=https://github.com/MoonlessWanderer/PartnerConsole/releases/download/v1.0.8
 curl -fsSLO "$release_url/partnerconsole.sh"
 curl -fsSLO "$release_url/SHA256SUMS"
 sha256sum --check --strict SHA256SUMS
@@ -179,4 +179,4 @@ Backend and frontend tests live under `dev/tests/`. The simulated V2Board panel 
 
 ## Release notes
 
-See the [Installer v1.0.7 release notes](dev/docs/releases/v1.0.7/RELEASE_NOTES.md) for Update behavior and the one-time upgrade.
+See the [v1.0.8 release notes](dev/docs/releases/v1.0.8/RELEASE_NOTES.md) for the partner experience and purchase history changes, and the [v1.0.7 release notes](dev/docs/releases/v1.0.7/RELEASE_NOTES.md) for stable release discovery.

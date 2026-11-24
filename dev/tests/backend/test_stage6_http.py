@@ -206,6 +206,12 @@ def test_http_retries_same_paid_purchase_after_lost_generate_reply(tmp_path):
             created = payload(api.post(subscriptions, headers=partner, json=confirmation))
             assert created["v2_user_id"] == remote_user["id"]
             assert_completed_create_link(env, operation_id, created, remote_user["id"])
+            linked = payload(api.get(ledger_path, headers=partner))["items"]
+            assert {(row["asset"], row["subscription_id"], row["subscription_username"])
+                    for row in linked if row["id"] not in opening_entries} == {
+                (asset, created["id"], username) for asset in ("gb", "days", "toman")
+            }
+
             after_retry = snapshot()
             assert after_retry == {
                 **pending,
@@ -222,6 +228,104 @@ def test_http_retries_same_paid_purchase_after_lost_generate_reply(tmp_path):
             after_detail = snapshot()
             assert after_detail == after_retry
             print(f"After same-form retry and detail load (HTTP 200, active): {after_detail}")
+
+
+
+def test_http_equal_create_charges_link_only_their_own_ledger_rows(tmp_path, lab_url):
+    env = api_env(tmp_path, lab_url)
+    with local_server(tmp_path, "app.main:app", env=env) as (url, _), \
+            httpx.Client(base_url=url, trust_env=False, timeout=15) as api:
+        admin, partner, owner, product = prepare(api, lab_url)
+        adjust = f"/api/admin/partners/{owner}/adjust"
+        route = "/api/partner/subscriptions"
+        end = format_jalali_date(now_tehran().date() + timedelta(days=31))
+        def fund(gb, days):
+            for asset, amount in (("gb", gb), ("days", days)):
+                payload(api.post(adjust, headers=admin, json={
+                    "asset": asset, "amount": amount, "product_id": product,
+                }))
+
+        engine = make_engine(env["DATABASE_URL"])
+        try:
+            with Session(engine) as db:
+                legacy = WalletLedger(partner_id=owner, product_id=product, asset="toman",
+                                      amount=-9600, reason="create", actor_type="partner", actor_id=owner)
+                db.add(legacy)
+                db.flush()
+                legacy_id = legacy.id
+                db.commit()
+
+            purchases = {}
+            for name, credit, expected in (
+                ("equal_purchase_a", (3, 5), (7000, 2600, 9600)),
+                ("equal_purchase_b", (3, 5), (7000, 2600, 9600)),
+                ("only_credit_purchase", (10, 31), (0, 0, 0)),
+            ):
+                fund(*credit)
+                request = {"product_id": product, "username": name, "traffic_cap_gb": 10, "end_date": end}
+                quote = payload(api.post(route + "/quote", headers=partner, json={**request, "action": "create"}))
+                assert (quote["gb_cost_toman"], quote["days_cost_toman"], quote["toman"]) == expected
+                assert quote["gb_cost_toman"] + quote["days_cost_toman"] == quote["toman"]
+                result = payload(api.post(route, headers=partner, json={**request, "consent_token": quote["consent_token"]}))
+                purchases[result["id"]] = (name, credit, expected[-1])
+
+            with Session(engine) as db:
+                assert db.get(Partner, owner).balance_toman == 80_800
+                assert db.get(WalletLedger, legacy_id).subscription_id is None
+                assert len(purchases) == 3
+                for operation in db.scalars(select(PanelOperation).where(PanelOperation.partner_id == owner)):
+                    name, (gb, days), wallet = purchases[operation.subscription_id]
+                    assert operation.status == "completed" and operation.username == name
+                    ids = json.loads(operation.payload)["charge_ledger_ids"]
+                    rows = list(db.scalars(select(WalletLedger).where(WalletLedger.id.in_(ids))))
+                    assert all(row.subscription_id == operation.subscription_id for row in rows)
+                    expected = {"gb": -gb, "days": -days}
+                    if wallet:
+                        expected["toman"] = -wallet
+                    assert len(rows) == len(expected)
+                    assert {row.asset: row.amount for row in rows} == expected
+
+            items = payload(api.get("/api/partner/ledger", headers=partner))["items"]
+            for row in items:
+                if row["id"] == legacy_id or row["reason"] == "admin_adjust":
+                    assert row["subscription_id"] is None and row["subscription_username"] is None
+                else:
+                    sub_id = row["subscription_id"]
+                    assert row["subscription_username"] == purchases[sub_id][0]
+                    assert payload(api.get(f"{route}/{sub_id}", headers=partner))["username"] == row["subscription_username"]
+        finally:
+            engine.dispose()
+
+
+
+def test_http_create_requotes_when_approved_price_becomes_unaffordable(tmp_path, lab_url):
+    with local_server(tmp_path, "app.main:app", env=api_env(tmp_path, lab_url)) as (url, _), \
+            httpx.Client(base_url=url, trust_env=False, timeout=15) as api:
+        admin, partner, _, product = prepare(api, lab_url)
+        route = "/api/partner/subscriptions"
+        body = {
+            "product_id": product, "username": "new_price_unaffordable", "traffic_cap_gb": 10,
+            "end_date": format_jalali_date(now_tehran().date() + timedelta(days=31)),
+        }
+        quote = payload(api.post(route + "/quote", headers=partner, json={**body, "action": "create"}))
+        assert (quote["affordable"], quote["toman"]) == (True, 13_100)
+        before = payload(api.get("/api/partner/dashboard", headers=partner))
+        ledgers = payload(api.get("/api/partner/ledger", headers=partner))
+        with httpx.Client(base_url=lab_url, trust_env=False, timeout=10) as panel:
+            upstream = payload(panel.get("/_lab/users"))
+            payload(api.put(f"/api/admin/products/{product}", headers=admin, json={
+                "name": "synthetic product", "email_domain": "old.example.test",
+                "active": True, "price_per_gb": 11_000, "price_per_day": 100,
+            }))
+            stale = api.post(route, headers=partner, json={**body, "consent_token": quote["consent_token"]})
+            assert payload(stale, 409)["code"] == "financial_consent"
+            assert payload(panel.get("/_lab/users")) == upstream
+        replacement = payload(api.post(route + "/quote", headers=partner, json={**body, "action": "create"}))
+        assert (replacement["affordable"], replacement["toman"], replacement["shortage_toman"]) == (False, 113_100, 13_100)
+        assert not replacement.get("consent_token")
+        assert payload(api.get("/api/partner/dashboard", headers=partner))["balance_toman"] == before["balance_toman"]
+        assert payload(api.get("/api/partner/ledger", headers=partner)) == ledgers
+        assert payload(api.get(route, headers=partner))["items"] == []
 
 
 def test_http_consent_rejects_context_changes_and_replays_once(tmp_path, lab_url):

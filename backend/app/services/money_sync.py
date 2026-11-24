@@ -997,6 +997,17 @@ def _apply_create(db: Session, op: PanelOperation, gateway):
         data["panel_applied"] = True
         _write(db, op, data)
     sub = _ensure_local_sub(db, op, data)
+    # Only the rows recorded when this operation took payment are eligible.
+    # Older operations can lack this evidence.
+    if ledger_ids := data.get("charge_ledger_ids"):
+        for row in db.scalars(select(WalletLedger).where(
+            WalletLedger.id.in_(ledger_ids),
+            WalletLedger.partner_id == op.partner_id,
+            WalletLedger.product_id == op.product_id,
+            WalletLedger.reason == "create",
+            WalletLedger.subscription_id.is_(None),
+        )):
+            row.subscription_id = sub.id
     data["subscription_id"] = sub.id
     _save_owned(db, op.id, {
         "subscription_id": sub.id,
@@ -1015,7 +1026,7 @@ def _ensure_local_sub(db: Session, op: PanelOperation, data: dict) -> Subscripti
         select(Subscription).where(Subscription.product_id == product_id, Subscription.username == username)
     )
     if sub is not None:
-        if int(sub.v2_user_id) != v2_user_id:
+        if sub.partner_id != partner_id or int(sub.v2_user_id) != v2_user_id:
             raise AppError("این نام کاربری به کاربر دیگری وصل است")
         return sub
     sub = Subscription(
@@ -1039,7 +1050,7 @@ def _ensure_local_sub(db: Session, op: PanelOperation, data: dict) -> Subscripti
         sub = db.scalar(
             select(Subscription).where(Subscription.product_id == product_id, Subscription.username == username)
         )
-        if sub is None or int(sub.v2_user_id) != v2_user_id:
+        if sub is None or sub.partner_id != partner_id or int(sub.v2_user_id) != v2_user_id:
             raise AppError("این نام کاربری روی این محصول قبلاً ثبت شده") from exc
     return sub
 
@@ -1294,6 +1305,8 @@ def perform_create(
         cap, days, credit_gb, credit_days, product.price_per_gb, product.price_per_day
     )
     if charge.toman > int(partner.balance_toman):
+        # A changed quote requires review. A wallet-only shortfall keeps its existing error.
+        consent.check(db, product.id, None, _dump_charge(charge))
         raise AppError("موجودی تومان یا اعتبار این محصول کافی نیست")
     plan_id = int(product.plan_id)
     _release_lock(db)
@@ -1326,9 +1339,9 @@ def perform_create(
     charge = subs.quote_charge(
         cap, days, credit.credit_gb, credit.credit_days, product.price_per_gb, product.price_per_day
     )
+    authorization = consent.check(db, product.id, None, _dump_charge(charge))
     if charge.toman > int(partner.balance_toman):
         raise AppError("موجودی تومان یا اعتبار این محصول کافی نیست")
-    authorization = consent.check(db, product.id, None, _dump_charge(charge))
     subs._take_charge(partner, credit, charge)
     data = _base_payload(
         actor,
@@ -1353,10 +1366,12 @@ def perform_create(
         created_at=utcnow(),
         updated_at=utcnow(),
     )
-    op.payload = json.dumps(data, ensure_ascii=False)
     db.add(op)
-    subs._charge_ledgers(db, partner.id, product.id, None, charge, "create", actor)
+    rows = subs._charge_ledgers(db, partner.id, product.id, None, charge, "create", actor)
     try:
+        db.flush()
+        data["charge_ledger_ids"] = [row.id for row in rows]
+        op.payload = json.dumps(data, ensure_ascii=False)
         db.commit()
     except IntegrityError:
         db.rollback()

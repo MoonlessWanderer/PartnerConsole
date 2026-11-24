@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Installer v1.0.7 for Partner Console 1.0.7.
+# Installer v1.0.8 for Partner Console 1.0.8.
 # The app runs as ppv1. Root never executes a file ppv1 can write.
 set -euo pipefail
 umask 077
 
-RELEASE_TAG="v1.0.7"
+RELEASE_TAG="v1.0.8"
 APP_VERSION="${RELEASE_TAG#v}"
-RELEASE_TREE_SHA256="a04c9a61e962edb8c5db1be3fd9645e50fb7f24f1d7f5f57fdf69a942c3d9d02"
+RELEASE_TREE_SHA256="875c31a9bf23f0801a46b2cc35066518c9d00b1b4dbce00ab4a4472336c0b302"
 OFFICIAL_REPO="https://github.com/MoonlessWanderer/PartnerConsole.git"
 APP_USER="ppv1"
 DB_NAME="partnerconsole"

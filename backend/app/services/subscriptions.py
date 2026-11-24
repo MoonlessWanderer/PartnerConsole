@@ -27,6 +27,7 @@ from app.services.billing import (
     D,
     bytes_to_gb,
     dec_str,
+    floor_money,
     gb_to_bytes,
     qgb,
     quote_charge,
@@ -209,22 +210,22 @@ def _ledger(
     subscription_id: int | None,
     reason: str,
     actor: Actor,
-) -> None:
+) -> WalletLedger | None:
     if D(amount) == 0:
-        return
+        return None
     stored = Decimal(int(amount)) if asset in {"days", "toman"} else qgb(amount)
-    db.add(
-        WalletLedger(
-            partner_id=partner_id,
-            asset=asset,
-            amount=stored,
-            product_id=product_id,
-            subscription_id=subscription_id,
-            reason=reason,
-            actor_type=actor.type,
-            actor_id=actor.id,
-        )
+    row = WalletLedger(
+        partner_id=partner_id,
+        asset=asset,
+        amount=stored,
+        product_id=product_id,
+        subscription_id=subscription_id,
+        reason=reason,
+        actor_type=actor.type,
+        actor_id=actor.id,
     )
+    db.add(row)
+    return row
 
 
 def _take_charge(partner: Partner, credit: PartnerProductCredit, charge) -> None:
@@ -237,37 +238,26 @@ def _take_charge(partner: Partner, credit: PartnerProductCredit, charge) -> None
         raise AppError("موجودی منفی مجاز نیست")
 
 
-def _charge_ledgers(db, partner_id, product_id, subscription_id, charge, reason: str, actor: Actor) -> None:
-    _ledger(
-        db,
-        partner_id=partner_id,
-        asset="gb",
-        amount=-charge.gb_from_credit,
-        product_id=product_id,
-        subscription_id=subscription_id,
-        reason=reason,
-        actor=actor,
-    )
-    _ledger(
-        db,
-        partner_id=partner_id,
-        asset="days",
-        amount=-charge.days_from_credit,
-        product_id=product_id,
-        subscription_id=subscription_id,
-        reason=reason,
-        actor=actor,
-    )
-    _ledger(
-        db,
-        partner_id=partner_id,
-        asset="toman",
-        amount=-charge.toman,
-        product_id=product_id,
-        subscription_id=subscription_id,
-        reason=reason,
-        actor=actor,
-    )
+def _charge_ledgers(db, partner_id, product_id, subscription_id, charge, reason: str, actor: Actor) -> list[WalletLedger]:
+    rows = []
+    for asset, amount in (
+        ("gb", -charge.gb_from_credit),
+        ("days", -charge.days_from_credit),
+        ("toman", -charge.toman),
+    ):
+        row = _ledger(
+            db,
+            partner_id=partner_id,
+            asset=asset,
+            amount=amount,
+            product_id=product_id,
+            subscription_id=subscription_id,
+            reason=reason,
+            actor=actor,
+        )
+        if row is not None:
+            rows.append(row)
+    return rows
 
 
 def _give_credit(db, credit, partner_id, product_id, subscription_id, gb, days, reason: str, actor: Actor) -> None:
@@ -843,6 +833,10 @@ def quote_operation(
         "base_jalali": format_jalali_date(base),
         "end_jalali": format_jalali_date(end) if end else None,
         **charge_view(charge),
+        **({
+            "gb_cost_toman": floor_money(charge.gb_paid, product.price_per_gb),
+            "days_cost_toman": floor_money(charge.days_paid, product.price_per_day),
+        } if action == "create" else {}),
         "gb_refund": dec_str(gb_refund),
         "days_refund": days_refund,
         "used_gb": dec_str(used) if used is not None else None,
