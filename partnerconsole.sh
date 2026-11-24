@@ -818,10 +818,13 @@ EOF
 }
 
 write_marker() {
-  local commit="$1"
-  printf 'tag=%s\ncommit=%s\narchive=%s\n' "$RELEASE_TAG" "$commit" "$RELEASE_ARCHIVE_SHA256" > "$APP_ROOT/.release/current"
-  chown root:root "$APP_ROOT/.release/current"
-  chmod 600 "$APP_ROOT/.release/current"
+  local commit="$1" marker
+  marker="$(mktemp -- "$APP_ROOT/.release/current.XXXXXXXX")" || return 1
+  if ! printf 'tag=%s\ncommit=%s\narchive=%s\n' "$RELEASE_TAG" "$commit" "$RELEASE_ARCHIVE_SHA256" > "$marker" ||
+      ! mv -f -- "$marker" "$APP_ROOT/.release/current"; then
+    rm -f -- "$marker"
+    return 1
+  fi
 }
 
 current_commit() {
@@ -833,8 +836,8 @@ current_commit() {
 }
 
 record_applied_files() {
-  [[ -f "$APP_ROOT/.release/managed.txt" ]] || return 0
-  pp_python - "$APP_ROOT" <<'PY'
+  [[ -f "$APP_ROOT/.release/managed.txt" ]] || return 1
+  pp_python - "$APP_ROOT" <<'PY' || return 1
 import hashlib
 import sys
 from pathlib import Path
@@ -986,8 +989,9 @@ deploy_fetched() {
       die "The code update failed. The previous code and directory access were restored, but dependencies could not be rebuilt. The database was not rolled back."
     fi
   fi
-  write_marker "$commit"
-  record_applied_files
+  # A visible release marker must identify files that are ready to resume.
+  record_applied_files || die "Could not record the installed file fingerprints."
+  write_marker "$commit" || die "Could not record the installed release."
 }
 
 release_already_current() {
