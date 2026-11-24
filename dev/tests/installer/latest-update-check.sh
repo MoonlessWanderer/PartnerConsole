@@ -107,4 +107,9 @@ rm "$work/latest.json"
 bash "$work/asset.sh" update  # An explicitly downloaded release needs no discovery.
 [[ "$(wc -l < "$work/applied")" == 4 ]]
 [[ -z "$(find "$PARTNERCONSOLE_ROOT/.release" -name 'update.*' -print -quit)" ]]
+# A historical RC marker can be upgraded to the stable version with the same number.
+printf 'tag=v1.10.0-rc.7\n' > "$PARTNERCONSOLE_ROOT/.release/current"
+bash "$work/asset.sh" update
+grep -Fxq 'tag=v1.10.0' "$PARTNERCONSOLE_ROOT/.release/current"
+[[ "$(wc -l < "$work/applied")" == 5 ]]
 echo 'ok latest stable CLI and menu, digest verification, pinned update and failure handling'

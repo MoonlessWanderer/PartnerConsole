@@ -1204,8 +1204,17 @@ installed_release_tag() {
   local marker="$APP_ROOT/.release/current" tag
   assert_root_file "$marker"
   tag="$(sed -n 's/^tag=//p' "$marker")"
-  [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "The installed release marker has no valid version."
+  [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]] ||
+    die "The installed release marker has no valid version."
   printf '%s\n' "$tag"
+}
+
+release_is_older() {
+  local target="$1" installed="$2"
+  # dpkg treats a hyphen as a packaging revision. A release candidate must
+  # instead sort below the stable version with the same major/minor/patch.
+  installed="${installed/-rc./~rc.}"
+  dpkg --compare-versions "${target#v}" lt "${installed#v}"
 }
 
 apply_pinned_update() (
@@ -1214,7 +1223,7 @@ apply_pinned_update() (
   flock -n "$update_lock" || die "Another Update is running for this installation."
   if [[ -f "$APP_ROOT/.release/current" ]]; then
     installed="$(installed_release_tag)" || return 1
-    if dpkg --compare-versions "${RELEASE_TAG#v}" lt "${installed#v}"; then
+    if release_is_older "$RELEASE_TAG" "$installed"; then
       die "Release $installed is already installed. Refusing to downgrade to $RELEASE_TAG."
     fi
   fi
@@ -1273,7 +1282,7 @@ print(tag, digest.removeprefix("sha256:"))
 PY
   )" || die "Invalid GitHub release metadata. Update stopped."
   read -r tag digest <<< "$metadata"
-  if dpkg --compare-versions "${tag#v}" lt "${installed#v}"; then
+  if release_is_older "$tag" "$installed"; then
     die "GitHub lists $tag as latest. Refusing to downgrade from $installed."
   fi
   if [[ "$tag" == "$installed" ]]; then
