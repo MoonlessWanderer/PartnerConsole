@@ -536,6 +536,109 @@ def test_mysql_two_independent_purchase_confirmations_share_one_wallet(engines, 
               "both confirmations reached the pre-debit panel read")
 
 
+@pytest.mark.parametrize(("asset", "amount", "reject_commit"), [
+    pytest.param("days", 5, False, id="days-visible-to-first-quote"),
+    pytest.param("gb", 4, False, id="gb-visible-to-independent-connection"),
+    pytest.param("gb", 4, True, id="commit-failure-rolls-back-credit-and-ledger"),
+])
+def test_mysql_credit_adjustment_response_waits_for_commit(
+    new_schema, engines, lab_url, monkeypatch, asset, amount, reject_commit,
+):
+    from fastapi.testclient import TestClient
+
+    from app.core import deps
+    from app.core.security import hash_password
+    from app.main import app
+
+    engine = engines(new_schema())
+    sessions = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    monkeypatch.setattr(deps, "SessionLocal", sessions)
+    with sessions.begin() as db:
+        db.add(AdminUser(username=ADMIN, password_hash=hash_password(PASSWORD)))
+
+    events = []
+    app_path = None
+
+    async def observe_response(scope, receive, send):
+        async def record(message):
+            if scope["path"] == app_path and message["type"] == "http.response.start":
+                events.append(("http", message["status"]))
+            await send(message)
+
+        await app(scope, receive, record)
+
+    api = TestClient(observe_response, raise_server_exceptions=False)
+    admin, partner, partner_id, product_id = test_stage6_http.prepare(api, lab_url)
+    with sessions.begin() as db:
+        db.add(PartnerProductCredit(partner_id=partner_id, product_id=product_id,
+                                    credit_gb=0, credit_days=0))
+
+    with engine.connect() as reader:
+        reader_id = reader.scalar(text("SELECT CONNECTION_ID()"))
+
+        def credit_and_ledger():
+            credit = reader.execute(select(PartnerProductCredit.credit_gb, PartnerProductCredit.credit_days)
+                                    .where(PartnerProductCredit.partner_id == partner_id,
+                                           PartnerProductCredit.product_id == product_id)).one()
+            ledger = reader.execute(select(WalletLedger.asset, WalletLedger.amount)
+                                    .where(WalletLedger.partner_id == partner_id,
+                                           WalletLedger.product_id == product_id)).all()
+            return credit, ledger
+
+        assert credit_and_ledger() == ((0, 0), [])
+        writes = set()
+        driver_commit = engine.dialect.do_commit
+
+        @event.listens_for(engine, "after_cursor_execute")
+        def record_writes(conn, _cursor, statement, _params, _context, _executemany):
+            sql = statement.lstrip().upper()
+            if sql.startswith("UPDATE PARTNER_PRODUCT_CREDITS"):
+                writes.add("credit")
+                conn.info["credit_adjustment"] = True
+            elif sql.startswith("INSERT INTO WALLET_LEDGER"):
+                writes.add("ledger")
+
+        def observe_commit(connection):
+            if not connection.info.pop("credit_adjustment", False):
+                return driver_commit(connection)
+            writer_id = connection.driver_connection.thread_id()
+            assert writer_id != reader_id
+            assert writes == {"credit", "ledger"}
+            if reject_commit:
+                # MySQL rolls back both writes when this uncommitted connection dies.
+                reader.exec_driver_sql(f"KILL CONNECTION {writer_id}")
+                events.append("connection-killed")
+            result = driver_commit(connection)
+            events.append("commit-succeeded")
+            return result
+
+        monkeypatch.setattr(engine.dialect, "do_commit", observe_commit)
+        app_path = f"/api/admin/partners/{partner_id}/adjust"
+        response = api.post(app_path, headers=admin,
+                            json={"asset": asset, "amount": amount, "product_id": product_id})
+        if reject_commit:
+            assert response.status_code == 500
+            assert events == ["connection-killed", ("http", 500)]
+            assert credit_and_ledger() == ((0, 0), [])
+            print("MySQL rejected COMMIT after both writes; HTTP 500; credit and ledger unchanged")
+            return
+
+        assert response.status_code == 200
+        assert events == ["commit-succeeded", ("http", 200)]
+        if asset == "days":
+            quote = test_stage6_http.payload(api.post("/api/partner/subscriptions/quote", headers=partner, json={
+                "action": "create", "product_id": product_id, "username": "credit_quote_target",
+                "traffic_cap_gb": 10, "end_date": format_jalali_date(now_tehran().date() + timedelta(days=31)),
+            }))
+            assert (quote["days_from_credit"], quote["toman"]) == (5, 12600)
+            assert credit_and_ledger() == ((0, 5), [("days", 5)])
+            print("COMMIT before HTTP 200; first quote applied 5 days and priced 12600 toman; one ledger row")
+        else:
+            assert credit_and_ledger() == ((4, 0), [("gb", 4)])
+            print("COMMIT before HTTP 200; independent connection read 4 GB and one ledger row")
+
+
+
 def test_mysql_lock_wait_timeout_moves_no_money(new_schema, engines):
     engine = engines(new_schema())
     sessions = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
