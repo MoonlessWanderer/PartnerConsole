@@ -3,36 +3,100 @@ name: Candidate fresh Ubuntu install
 on:
   push:
     branches: ['release-validation/**']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Stable version to build, without publishing
+        required: true
+        default: v1.0.9
 
 permissions:
   contents: read
 
 jobs:
+  assets:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Build, audit and checksum the application package
+        env:
+          RELEASE_VERSION: ${{ inputs.version || 'v1.0.9' }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          python3 dev/release/build.py "$GITHUB_SHA" "$RELEASE_VERSION" "$RUNNER_TEMP/assets"
+          (cd "$RUNNER_TEMP/assets" && sha256sum --check --strict SHA256SUMS)
+          tar -tzf "$RUNNER_TEMP/assets/partnerconsole-$RELEASE_VERSION.tar.gz" | LC_ALL=C sort > "$RUNNER_TEMP/actual"
+          { printf 'PACKAGE.json\n'; cat dev/release/runtime-files.txt; } | LC_ALL=C sort > "$RUNNER_TEMP/expected"
+          diff -u "$RUNNER_TEMP/expected" "$RUNNER_TEMP/actual"
+          ! grep -E '(^|/)(dev|tests|data|runtime|backups|\.git|\.github)(/|$)' "$RUNNER_TEMP/actual"
+          mkdir -p "$RUNNER_TEMP/harness"
+          cp dev/tests/installer/{fresh-install-linux-check.sh,release-http-fixture.sh,release-tty.py} "$RUNNER_TEMP/harness/"
+          awk '/^## Install and update$/{on=1} on && /^\x60\x60\x60bash$/{code=1;next} code && /^\x60\x60\x60$/{exit} code{print}' README.md > "$RUNNER_TEMP/harness/user-install.sh"
+          grep -Fxq 'sudo bash ./partnerconsole.sh install' "$RUNNER_TEMP/harness/user-install.sh"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: package-${{ github.sha }}
+          path: ${{ runner.temp }}/assets
+          if-no-files-found: error
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: harness-${{ github.sha }}
+          path: ${{ runner.temp }}/harness
+          if-no-files-found: error
+
   install:
+    needs: assets
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53
+        with:
+          name: package-${{ github.sha }}
+          path: ${{ runner.temp }}/candidate
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53
+        with:
+          name: harness-${{ github.sha }}
+          path: ${{ runner.temp }}/harness
+      - name: Remove the disposable runner's existing MySQL packages
+        run: |
+          sudo systemctl stop mysql || true
+          { dpkg-query -W -f '${Package}\n' 'mysql-*' || true; } | xargs -r sudo apt-get purge -y
+          sudo rm -rf /etc/mysql /var/lib/mysql /var/log/mysql
+      - name: Run README from an empty directory with no source checkout
+        run: |
+          sudo PARTNERCONSOLE_DISPOSABLE_HOST=1 bash "$RUNNER_TEMP/harness/fresh-install-linux-check.sh" \
+            "$RUNNER_TEMP/candidate" "$GITHUB_SHA"
+
+  migration:
+    needs: assets
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          fetch-depth: 0
           persist-credentials: false
-      - name: Prepare disposable candidate origin
-        shell: bash
+      - name: Obtain the exact package used by fresh install
+        if: inputs.version == '' || inputs.version == 'v1.0.9'
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53
+        with:
+          name: package-${{ github.sha }}
+          path: ${{ runner.temp }}/candidate-a
+      - name: Prepare two consecutive candidate versions
         run: |
-          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-          tag="$(sed -n 's/^RELEASE_TAG="\([^"]*\)"$/\1/p' partnerconsole.sh)"
-          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
-          origin="$RUNNER_TEMP/fresh-candidate.git"
-          git clone --quiet --bare --no-local --no-tags "$GITHUB_WORKSPACE" "$origin"
-          git -C "$origin" tag "$tag" "$GITHUB_SHA"
+          if [[ ! -d "$RUNNER_TEMP/candidate-a" ]]; then
+            python3 dev/release/build.py "$GITHUB_SHA" v1.0.9 "$RUNNER_TEMP/candidate-a"
+          fi
+          python3 dev/release/build.py "$GITHUB_SHA" v1.0.10 "$RUNNER_TEMP/candidate-b"
       - name: Remove the disposable runner's existing MySQL packages
-        shell: bash
         run: |
           sudo systemctl stop mysql || true
           { dpkg-query -W -f '${Package}\n' 'mysql-*' || true; } | xargs -r sudo apt-get purge -y
           sudo rm -rf /etc/mysql /var/lib/mysql /var/log/mysql
-      - name: Install and start the sealed candidate
-        shell: bash
+      - name: Upgrade public v1.0.8 to A and A to B through the installed launcher
         run: |
-          sudo PARTNERCONSOLE_DISPOSABLE_HOST=1 bash dev/tests/installer/fresh-install-linux-check.sh \
-            "$RUNNER_TEMP/fresh-candidate.git" "$GITHUB_SHA"
+          sudo PARTNERCONSOLE_DISPOSABLE_HOST=1 bash dev/tests/installer/release-migration-linux-check.sh \
+            "$RUNNER_TEMP/candidate-a" "$RUNNER_TEMP/candidate-b"

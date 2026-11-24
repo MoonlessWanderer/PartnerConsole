@@ -50,8 +50,8 @@ chmod +x "$work/bin/curl"
 export PATH="$work/bin:$PATH"
 asset_hash="$(sha256sum "$work/asset.sh" | cut -d ' ' -f1)"
 metadata() {
-  printf '{"tag_name":"%s","draft":false,"prerelease":%s,"assets":[{"name":"partnerconsole.sh","state":"uploaded","digest":"sha256:%s"}]}\n' \
-    "$1" "${2:-false}" "${3:-$asset_hash}" > "$work/latest.json"
+  printf '{"tag_name":"%s","draft":false,"prerelease":%s,"assets":[{"name":"partnerconsole.sh","state":"uploaded","digest":"sha256:%s"},{"name":"partnerconsole-%s.tar.gz","state":"uploaded","digest":"sha256:%s"},{"name":"SHA256SUMS","state":"uploaded","digest":"sha256:%s"}]}\n' \
+    "$1" "${2:-false}" "${3:-$asset_hash}" "$1" "$asset_hash" "$asset_hash" > "$work/latest.json"
 }
 reject() {
   if bash "$installed" update > "$work/message" 2>&1; then
@@ -67,7 +67,7 @@ reject 'discovery failure' 'Could not retrieve'
 printf 'invalid-json\n' > "$work/latest.json"
 reject 'invalid metadata' 'Invalid GitHub release metadata'
 printf '{"tag_name":"v1.10.0","draft":false,"prerelease":false,"assets":[]}\n' > "$work/latest.json"
-reject 'missing installer' 'one uploaded partnerconsole.sh'
+reject 'missing assets' 'one uploaded partnerconsole-v1.10.0.tar.gz'
 metadata v1.8.9
 reject 'older release' 'Refusing to downgrade'
 metadata v1.10.0 true
