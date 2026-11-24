@@ -99,6 +99,31 @@ Update checks the target tag and package digest, detects local changes to manage
 
 For manual installation and recovery, see the [manual installation guide](dev/docs/guides/INSTALL.md) and [production maintenance procedure](dev/docs/guides/production-bootstrap.md).
 
+### Install or update from a local release archive
+
+On a connected machine, download `partnerconsole.sh`,
+`partnerconsole-vX.Y.Z.tar.gz`, and `SHA256SUMS` for the **same stable release**
+from GitHub. Verify both files with `sha256sum --check --strict SHA256SUMS`
+before transferring the verified installer and archive to the Ubuntu server.
+
+Run the command for your situation from the directory containing the two files.
+Replace `vX.Y.Z` with the version you downloaded.
+
+```bash
+# Fresh install
+sudo bash ./partnerconsole.sh install --from-archive ./partnerconsole-vX.Y.Z.tar.gz
+
+# Upgrade an existing installation using the target version's installer
+sudo bash ./partnerconsole.sh update --from-archive ./partnerconsole-vX.Y.Z.tar.gz
+```
+
+The installer checks the selected archive against its embedded SHA-256 before
+extraction. It uses the same managed-file and configuration safeguards as the
+online installer. An invalid local file stops the command. This mode skips
+GitHub release discovery and downloads for Partner Console and still needs
+network access for Ubuntu, Python, and Node dependencies. The installed
+`sudo partnerconsole update` command continues to use the online release feed.
+
 ## Domain & SSL
 
 Run `sudo partnerconsole domain` in an interactive terminal. Check that the domain's A record matches the server. Any AAAA records must match the server's usable public IPv6 address. The installer can request permission to install the required Ubuntu packages and uses Nginx to serve a local HTTP-01 challenge check before invoking Certbot's Webroot authenticator.

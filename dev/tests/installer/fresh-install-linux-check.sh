@@ -7,6 +7,8 @@ umask 077
 tools="$(cd "$(dirname "$0")" && pwd)"
 assets="$(realpath "$1")"
 expected="$2"
+mode="${3:-online}"
+[[ "$mode" == online || "$mode" == archive ]]
 tag="$(sed -n 's/^RELEASE_TAG="\(.*\)"$/\1/p' "$assets/partnerconsole.sh")"
 [[ ! -e /srv/partnerconsole && ! -e /usr/local/bin/partnerconsole ]]
 # shellcheck source=/dev/null
@@ -19,12 +21,31 @@ python3 -c 'import secrets; print(secrets.token_urlsafe(24))' > "$work/password"
 mkdir "$work/empty"
 cat > "$PC_RELEASE_FIXTURE_DIR/bin/git" <<'EOF'
 #!/bin/bash
+printf '%s\n' git >> /srv/pc-release-fixture/blocked-requests
 echo 'Git was invoked by the packaged installer' >&2
 exit 97
 EOF
 chmod 700 "$PC_RELEASE_FIXTURE_DIR/bin/git"
 cd "$work/empty"
-python3 "$tools/release-tty.py" "$work/password" bash "$tools/user-install.sh" | tee "$work/install.log"
+if [[ "$mode" == archive ]]; then
+  block_release_feed
+  cp "$assets/partnerconsole.sh" ./partnerconsole.sh
+  cp "$assets/partnerconsole-$tag.tar.gz" './selected archive.tar.gz'
+  printf 'corrupt archive\n' > ./corrupt.tar.gz
+  # The test already runs as root on this disposable runner.
+  # shellcheck disable=SC2024
+  if sudo bash ./partnerconsole.sh install --from-archive ./missing.tar.gz > "$work/missing.log" 2>&1; then exit 1; fi
+  grep -F 'Local archive is not a readable regular file:' "$work/missing.log"
+  # shellcheck disable=SC2024
+  if sudo bash ./partnerconsole.sh install --from-archive ./corrupt.tar.gz > "$work/corrupt.log" 2>&1; then exit 1; fi
+  grep -F "Local archive checksum mismatch for $tag:" "$work/corrupt.log"
+  for path in .release/current config/api.env config/web.env; do [[ ! -e "/srv/partnerconsole/$path" ]]; done
+  python3 "$tools/release-tty.py" "$work/password" sudo bash ./partnerconsole.sh install \
+    --from-archive './selected archive.tar.gz' | tee "$work/install.log"
+  sudo partnerconsole start
+else
+  python3 "$tools/release-tty.py" "$work/password" bash "$tools/user-install.sh" | tee "$work/install.log"
+fi
 app=/srv/partnerconsole
 grep -Fx "commit=$expected" "$app/.release/current"
 grep -Fx "tag=$tag" "$app/.release/current"
@@ -45,5 +66,10 @@ curl -fsS http://127.0.0.1:3741/ | grep -F '<title>Partner Console</title>' >/de
 curl -fsS http://127.0.0.1:8741/openapi.json | python3 -c \
   'import sys,json; assert json.load(sys.stdin)["info"]["version"]==sys.argv[1]' "${tag#v}"
 [[ "$(curl -fsS http://127.0.0.1:8741/api/health)" == '{"ok":true}' ]]
-grep -Fxq "https://github.com/MoonlessWanderer/PartnerConsole/releases/download/$tag/partnerconsole-$tag.tar.gz" "$PC_RELEASE_FIXTURE_DIR/requests"
-echo "README fresh install, API, sign-in and runtime-only tree passed for $expected"
+if [[ "$mode" == online ]]; then
+  grep -Fxq "https://github.com/MoonlessWanderer/PartnerConsole/releases/download/$tag/partnerconsole-$tag.tar.gz" "$PC_RELEASE_FIXTURE_DIR/requests"
+else
+  [[ ! -s "$PC_RELEASE_FIXTURE_DIR/requests" ]]
+  archive_test_had_no_requests
+fi
+echo "Fresh $mode install, API, sign-in and runtime-only tree passed for $expected"
