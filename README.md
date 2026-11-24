@@ -34,6 +34,11 @@ The installer downloads and verifies its versioned application package. The
 default directory is /srv/partnerconsole. Set PARTNERCONSOLE_ROOT on the initial
 installer invocation to use a different directory.
 
+If installation stops at the initial administrator prompt, rerun the same
+commands with the same release. Install keeps the written configuration and
+finishes administrator setup. Repeating Install after initialization does
+not change the existing administrator account.
+
 | Service | Local address |
 | --- | --- |
 | API | `http://127.0.0.1:8741` |

@@ -1006,7 +1006,7 @@ ask_origin() {
   while true; do
     log "Enter the site HTTPS origin, for example https://console.example.com"
     log "Press Enter if you do not have a domain yet. The app stays on this server and is not published."
-    tty_read -p "HTTPS origin: " origin
+    tty_read -p "HTTPS origin: " origin || return 1
     if [[ -z "$origin" ]]; then
       origin="http://127.0.0.1:3741"
       web_base="http://127.0.0.1:8741"
@@ -1040,8 +1040,8 @@ PY
 ask_admin_password() {
   local first second
   while true; do
-    tty_silent -p "Initial admin password (at least 12 characters, not saved): " first
-    tty_silent -p "Repeat password: " second
+    tty_silent -p "Initial admin password (at least 12 characters, not saved): " first || return 1
+    tty_silent -p "Repeat password: " second || return 1
     if [[ "$first" != "$second" ]]; then
       log "The passwords do not match."
       continue
@@ -1099,12 +1099,15 @@ subprocess.run([program, "--protocol=socket"], input=sql, text=True, check=True)
 PY
 }
 
+# 0: an admin exists, 1: bootstrap is needed, 2: readiness could not be verified.
 database_ready() {
   local tables admins
   assert_mysql_ident "$DB_NAME"
-  tables="$(mysql --protocol=socket -N -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='${DB_NAME}' AND table_name='admin_users'")"
-  [[ "$tables" == "1" ]] || return 1
-  admins="$(mysql --protocol=socket -N -e "SELECT COUNT(*) FROM ${DB_NAME}.admin_users")"
+  tables="$(mysql --protocol=socket -N -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='${DB_NAME}' AND table_name='admin_users'")" || return 2
+  [[ "$tables" != "0" ]] || return 1
+  [[ "$tables" == "1" ]] || return 2
+  admins="$(mysql --protocol=socket -N -e "SELECT COUNT(*) FROM ${DB_NAME}.admin_users")" || return 2
+  [[ "$admins" =~ ^[0-9]+$ ]] || return 2
   [[ "$admins" != "0" ]]
 }
 
@@ -1141,40 +1144,59 @@ for name, text in (("api.env", api), ("web.env", web)):
 PY
 }
 
-setup_app() {
+setup_app() (
+  local install_lock ready=0
   assert_package_identity
-  [[ ! -e "$APP_ROOT/.release/current" ]] || die "Use Update for an existing installation."
-  install_deps
-  ensure_user
-  fetch_release_package "${BASH_SOURCE[0]}"
-  if [[ -f "$APP_ROOT/config/api.env" ]]; then
-    log "The existing configuration was kept."
+  [[ ! -L "$APP_ROOT" ]] || die "Refusing a symbolic link at the install path."
+  ensure_install_directory
+  assert_root_file "$APP_ROOT"
+  exec {install_lock}< "$APP_ROOT" || die "Cannot open the install directory."
+  flock -n "$install_lock" || die "Another Install or Update is running for this installation."
+  if [[ -e "$APP_ROOT/.release/current" ]]; then
+    assert_root_file "$APP_ROOT/.release/current"
+    release_already_current "$RELEASE_SOURCE_COMMIT" ||
+      die "This installation differs from the downloaded release. Use Update for a different version or review local file changes."
+    assert_runtime_locked
+    log "The existing release and configuration were kept."
   else
-    local origin web_base db_password
-    local -a origin_lines
-    mapfile -t origin_lines < <(ask_origin)
-    origin="${origin_lines[0]}"
-    web_base="${origin_lines[1]}"
-    db_password="$(pp_python -c 'import secrets; print(secrets.token_urlsafe(24))')"
-    create_database "$db_password"
-    write_config "$origin" "$web_base" "$db_password"
-    unset db_password
-    log "The database password is only in config/api.env and was not printed."
+    install_deps
+    ensure_user
+    fetch_release_package "${BASH_SOURCE[0]}" || return 1
+    if [[ -f "$APP_ROOT/config/api.env" ]]; then
+      log "The existing configuration was kept."
+    else
+      local origin web_base db_password answers
+      local -a origin_lines
+      answers="$(ask_origin)" || return 1
+      mapfile -t origin_lines <<< "$answers"
+      origin="${origin_lines[0]}"
+      web_base="${origin_lines[1]}"
+      db_password="$(pp_python -c 'import secrets; print(secrets.token_urlsafe(24))')"
+      create_database "$db_password"
+      write_config "$origin" "$web_base" "$db_password"
+      unset db_password
+      log "The database password is only in config/api.env and was not printed."
+    fi
+    deploy_fetched "$RELEASE_SOURCE_COMMIT"
   fi
-  deploy_fetched "$RELEASE_SOURCE_COMMIT"
+  assert_root_file "$APP_ROOT/config/api.env"
+  assert_root_file "$APP_ROOT/config/web.env"
   install_launcher
-  if database_ready; then
-    log "The database is already initialized. Bootstrap was not run again."
-  else
-    local admin_password
-    assert_root_file "$APP_ROOT/scripts/bootstrap.sh"
-    admin_password="$(ask_admin_password)"
-    runuser -u "$APP_USER" -- env ADMIN_PASSWORD="$admin_password" bash "$APP_ROOT/scripts/bootstrap.sh" --confirm-database
-    unset admin_password
-  fi
+  database_ready || ready=$?
+  case "$ready" in
+    0) log "The database is already initialized. Bootstrap was not run again." ;;
+    1)
+      local admin_password
+      assert_root_file "$APP_ROOT/scripts/bootstrap.sh"
+      admin_password="$(ask_admin_password)" || return 1
+      runuser -u "$APP_USER" -- env ADMIN_PASSWORD="$admin_password" bash "$APP_ROOT/scripts/bootstrap.sh" --confirm-database
+      unset admin_password
+      ;;
+    *) die "Could not check administrator initialization. Check the local MySQL service and rerun Install." ;;
+  esac
   log "Install finished. Do not expose ports 8741, 3741, or 3306."
   log "Start: sudo partnerconsole start"
-}
+)
 
 update_app() {
   [[ -f "$APP_ROOT/config/api.env" ]] || die "Install Partner Console before updating it."
@@ -1468,7 +1490,10 @@ menu_loop() {
     printf '  0) Exit\n\n'
     tty_read -p "Choice: " choice
     case "$choice" in
-      1) (set -e; run_choice install) || log "Failed." ;;
+      1)
+        # Start a new Bash so the menu's failure handler cannot suppress errexit.
+        PARTNERCONSOLE_ROOT="$APP_ROOT" /usr/bin/bash "${BASH_SOURCE[0]}" install || log "Failed."
+        ;;
       2) (set -e; run_choice start) || log "Failed." ;;
       3) (set -e; run_choice stop) || log "Failed." ;;
       4) (set -e; run_choice restart) || log "Failed." ;;
