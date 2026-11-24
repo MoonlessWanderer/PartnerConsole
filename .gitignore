@@ -23,4 +23,4 @@ runtime/tmp/*
 !runtime/tmp/.gitkeep
 runtime/cache/**
 !runtime/cache/.gitkeep
-release/v1.0.0/generated/
+deploy/generated/

@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Stable version to validate, such as v1.0.9
+        description: Stable version to validate, such as v1.0.10
         required: true
         type: string
       commit:
@@ -37,7 +37,7 @@ jobs:
               exit 1
             fi
           else
-            RELEASE_VERSION=v1.0.9
+            RELEASE_VERSION=v1.0.10
           fi
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           python3 dev/release/build.py "$GITHUB_SHA" "$RELEASE_VERSION" "$RUNNER_TEMP/assets"
@@ -117,7 +117,7 @@ jobs:
   migration:
     needs: assets
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -138,7 +138,11 @@ jobs:
           sudo systemctl stop mysql || true
           { dpkg-query -W -f '${Package}\n' 'mysql-*' || true; } | xargs -r sudo apt-get purge -y
           sudo rm -rf /etc/mysql /var/lib/mysql /var/log/mysql
-      - name: Upgrade public v1.0.8 to A and A to B through the installed launcher
+      - name: Install the pinned browser driver
+        run: npm install --prefix "$RUNNER_TEMP/upgrade-browser" --no-save --package-lock=false --no-audit --no-fund playwright-core@1.56.1
+      - name: Upgrade public v1.0.9 through both candidates, purchase, and restore
         run: |
-          sudo PARTNERCONSOLE_DISPOSABLE_HOST=1 bash dev/tests/installer/release-migration-linux-check.sh \
+          sudo PARTNERCONSOLE_DISPOSABLE_HOST=1 BROWSER_USER="$(id -un)" \
+            PLAYWRIGHT_MODULE="$RUNNER_TEMP/upgrade-browser/node_modules/playwright-core" \
+            bash dev/tests/installer/release-migration-linux-check.sh \
             "$RUNNER_TEMP/candidate-a" "$RUNNER_TEMP/candidate-b"

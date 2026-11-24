@@ -76,9 +76,11 @@ sudo partnerconsole start
 
 With release discovery installed, run `sudo partnerconsole update` or choose **5) Update** in the installed menu. The command looks up the official GitHub Latest release. For a newer version, it verifies the downloaded installer's SHA256 against the GitHub release asset digest and checks its pinned tag before running it. When already current, it checks the installed release identity and managed files without downloading the archive, reinstalling, or restarting. Update refuses an older stable release.
 
-For an installation on **v1.0.8**, run `sudo partnerconsole update` after the first packaged stable release is published. The same command applies later packaged releases.
+Starting with the next release after `v1.0.9`, the oldest supported upgrade source is `v1.0.9`. Run `sudo partnerconsole update` on `v1.0.9` or any later supported release.
 
-Installers through **v1.0.6** require a one-time manual upgrade to v1.0.7. You can also use a separately downloaded installer to select a particular target release. Download the installer and checksum into a new directory. The following command prompts for the published target tag.
+A fresh installation renders optional Nginx and systemd templates in `deploy/generated/`. To render them after an upgrade, run `sudo bash scripts/render-host-templates.sh ppv1` from the installation root. Files previously generated or added by the operator in `release/v1.0.0/generated/` stay in place.
+
+You can also download an installer and checksum to select a particular published target release. Run the following commands in a new directory.
 
 ```bash
 work_dir="$(mktemp -d)"
@@ -141,7 +143,7 @@ install** manually on `main` with inputs `version` and `commit`:
 ```bash
 git fetch origin main
 commit="$(git rev-parse origin/main)"
-gh workflow run fresh-install.yml --ref main -f version=v1.0.9 -f commit="$commit"
+gh workflow run fresh-install.yml --ref main -f version=v1.0.10 -f commit="$commit"
 ```
 
 Replace the example version with the intended release tag. The workflow
@@ -161,7 +163,7 @@ assets.
 For a local build from a development checkout, run:
 
 ```bash
-python3 dev/release/build.py "$(git rev-parse HEAD)" v1.0.9 /tmp/partnerconsole-release
+python3 dev/release/build.py "$(git rev-parse HEAD)" v1.0.10 /tmp/partnerconsole-release
 (cd /tmp/partnerconsole-release && sha256sum --check --strict SHA256SUMS)
 ```
 
@@ -219,7 +221,7 @@ bash dev/tests/installer/domain-build-next-check.sh
 
 Backend and frontend tests live under `dev/tests/`. The simulated V2Board panel lives in `dev/v2lab/`.
 
-`domain-build-next-check.sh` copies the repository to a temporary custom root, runs `npm ci` and real Next.js builds, and uses headless Chrome or Edge to record the sign-in request URLs. Set `CHROME` to the browser path if it is not detected. The `Installer Linux validation` workflow runs additional suites on GitHub-hosted Ubuntu 24.04. Its Credentials job uses a controlling terminal, the installed launcher, and disposable MySQL 8.4. The install, update, and restore job tests official release baselines against the packaged candidate in a disposable runner, then runs Backup and Full Restore on fixture data. Backend tests use temporary SQLite databases and simulated V2Board responses for billing and rollback. The security suite and guarded MySQL tests document their own prerequisites.
+`domain-build-next-check.sh` copies the repository to a temporary custom root, runs `npm ci` and real Next.js builds, and uses headless Chrome or Edge to record the sign-in request URLs. Set `CHROME` to the browser path if it is not detected. The `Installer Linux validation` workflow runs additional suites on GitHub-hosted Ubuntu 24.04. Its Credentials job uses a controlling terminal, the installed launcher, and disposable MySQL 8.4. The candidate workflow installs the public v1.0.9 assets, upgrades through two candidate versions, and checks browser purchases, official Backup, and Full Restore on the same disposable runner. Backend tests use temporary SQLite databases and simulated V2Board responses for billing and rollback. The security suite and guarded MySQL tests document their own prerequisites.
 
 ## Security considerations
 

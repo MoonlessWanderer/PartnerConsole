@@ -49,6 +49,7 @@ def main():
         segments = path.split("/")
         if (not all(re.fullmatch(r"[A-Za-z0-9_\[][A-Za-z0-9_.\[\]-]*", item) for item in segments)
             or set(segments) & {"dev", "tests", "data", "logs", "runtime", "backups", "node_modules", "partnerconsole.sh"}
+            or path.startswith("deploy/generated/")
             or path in {"PACKAGE.json", "config/api.env", "config/web.env"}
             or tree.get(path) not in {b"100644", b"100755"}):
             parser.error(f"invalid runtime file {path}")

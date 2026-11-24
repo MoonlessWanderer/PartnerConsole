@@ -44,11 +44,14 @@ if sys.argv[1] == "seed":
 
 sub, = mine("subscriptions")["items"]
 ledger = mine("ledger")["items"]
-wallet = mine("me")["balance_toman"]
+identity = mine("me")
+wallet = identity["balance_toman"]
 assert wallet == 94900 and len(ledger) == 2
 assert sub["username"] == "retained_subscriber" and sub["v2_user_id"]
 live = mine(f"subscriptions/{sub['id']}")
 assert live["subscribe_url"] and not live.get("live_error")
 print(json.dumps({"balance_toman":wallet,
+    "admin":call("admin/me", token=admin),
+    "partner":[identity[k] for k in ("id","username")],
     "ledger":[[row[k] for k in ("id","amount","asset","reason","subscription_id")] for row in ledger],
     "subscription":[sub[k] for k in ("id","username","product_id","v2_user_id","traffic_cap_gb","expired_at")]},sort_keys=True))

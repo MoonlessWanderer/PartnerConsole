@@ -70,7 +70,9 @@ if [[ ! -x "$venv/bin/python" ]]; then
   python3 -m venv "$venv"
 fi
 "$venv/bin/python" -m pip install --upgrade pip
-"$venv/bin/python" -m pip install -e "$PP_ROOT/backend" -c "$PP_ROOT/release/v1.0.0/requirements.lock.txt"
+constraints="$PP_ROOT/deploy/requirements.lock.txt"
+printf 'Installing Python dependencies with %s.\n' "$constraints"
+"$venv/bin/python" -m pip install -e "$PP_ROOT/backend" -c "$constraints"
 npm ci --prefix "$PP_ROOT"
 
 if [[ "$(tr -d '\r' < "$PP_ROOT/config/web.env")" == *"REPLACE_WITH"* || "$(tr -d '\r' < "$PP_ROOT/config/web.env")" == *"panel.example.com"* ]]; then

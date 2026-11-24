@@ -24,13 +24,22 @@ exit 97
 EOF
 chmod 700 "$PC_RELEASE_FIXTURE_DIR/bin/git"
 cd "$work/empty"
-python3 "$tools/release-tty.py" "$work/password" bash "$tools/user-install.sh"
+python3 "$tools/release-tty.py" "$work/password" bash "$tools/user-install.sh" | tee "$work/install.log"
 app=/srv/partnerconsole
 grep -Fx "commit=$expected" "$app/.release/current"
 grep -Fx "tag=$tag" "$app/.release/current"
 read -r archive_sha _ < <(sha256sum "$assets/partnerconsole-$tag.tar.gz")
 grep -Fx "archive=$archive_sha" "$app/.release/current"
 cmp "$assets/partnerconsole.sh" "$app/partnerconsole.sh"
+grep -Fq "Installing Python dependencies with $app/deploy/requirements.lock.txt." "$work/install.log"
+for unit in api web; do
+  grep -Fxq "WorkingDirectory=$app" "$app/deploy/generated/partnerconsole-$unit.service"
+  grep -Fxq 'User=ppv1' "$app/deploy/generated/partnerconsole-$unit.service"
+done
+grep -Fq 'proxy_pass http://127.0.0.1:8741;' "$app/deploy/generated/partnerconsole.conf"
+! grep -REq '@ROOT@|@SERVICE_USER@' "$app/deploy/generated"
+[[ ! -e "$app/release" ]]
+echo 'Python dependencies installed with the deploy lockfile and Nginx/systemd templates rendered in deploy/generated.'
 for excluded in dev tests .github .git; do [[ ! -e "$app/$excluded" ]]; done
 curl -fsS http://127.0.0.1:3741/ | grep -F '<title>Partner Console</title>' >/dev/null
 curl -fsS http://127.0.0.1:8741/openapi.json | python3 -c \

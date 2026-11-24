@@ -144,7 +144,9 @@ async function switchAccount(page, shared, first, second, snapshot) {
   page.on("request", request => { if (isPurchase(request)) requests.push(request); });
   const name = usernameField(page);
   const oldReview = await name.isVisible() && await name.inputValue() === oldName;
-  const confirmAvailable = oldReview && await submit.isVisible() && await submit.isEnabled() && await amount.isVisible();
+  // Read visibility and enabled state together; the purchase page may already be navigating.
+  const enabledSubmit = submit.and(page.locator("button:visible:enabled:not([aria-disabled='true'])"));
+  const confirmAvailable = oldReview && await enabledSubmit.count() === 1 && await amount.isVisible();
 
   if (baseline) {
     const submitted = response(page, "/api/partner/subscriptions");
@@ -160,7 +162,7 @@ async function switchAccount(page, shared, first, second, snapshot) {
     path: new URL(page.url()).pathname,
     account: await accountLabel(page, second).isVisible() ? second.username : await accountLabel(page, first).isVisible() ? first.username : null,
     amount: await amount.count() ? await amount.first().textContent() : null,
-    confirmEnabled: await submit.isVisible() && await submit.isEnabled(),
+    confirmEnabled: await enabledSubmit.count() === 1,
   };
   const statuses = await Promise.all(requests.map(async request => (await request.response())?.status() ?? null));
   const after = await snapshot();
