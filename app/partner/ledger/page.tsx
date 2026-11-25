@@ -91,8 +91,14 @@ export default function PartnerLedger() {
         {rows.map((row) => (
           <li key={row.id} data-ledger-id={row.id}>
             <div className={styles.line}><strong className="flex items-center gap-2"><IconTile name="receipt"/><Reason row={row} /></strong><Change row={row} /></div>
-            <div className={styles.line}><span>{row.product_name || "—"}</span><DateValue row={row} /></div>
-            <div className={styles.line}><span><Subscription row={row} /></span><span><Actor row={row} /></span></div>
+            <div className={styles.line}>
+              <span className={styles.rowMeta}>
+                {row.product_name && <span>{row.product_name}</span>}
+                {row.subscription_id !== null && row.subscription_username && <Subscription row={row} />}
+                <Actor row={row} />
+              </span>
+              <DateValue row={row} />
+            </div>
           </li>
         ))}
       </ul>

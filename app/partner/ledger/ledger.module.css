@@ -14,7 +14,7 @@
 .table thead th:first-child { border-start-start-radius: 13px; }
 .table thead th:last-child { border-start-end-radius: 13px; }
 .table tbody tr { border-block-start: 1px solid var(--line); }
-.table tbody th { font-weight: 700; }
+.table tbody th { font-weight: 700; background: transparent; }
 .table :is(td:nth-child(2), td:last-child) { white-space: nowrap; }
 
 .change {
@@ -67,6 +67,7 @@
   .line:first-child { font-size: 14px; color: var(--pc-text); }
   .line > span:first-child { min-width: 0; overflow-wrap: anywhere; }
   .line > :last-child { flex-shrink: 0; }
+  .rowMeta { display: flex; flex-wrap: wrap; align-items: center; gap: 0 7px; }
 }
 
 .panel { border-color:var(--pc-border); background:var(--pc-surface); }
