@@ -5,7 +5,7 @@ import { ActionLink, NavRow, PageHead, Wallet } from "@/components/Design";
 import { IconTile } from "@/components/Icons";
 import { Banner } from "@/components/ui";
 import { sessionUsername } from "@/lib/api";
-import { formatInt, formatToman } from "@/lib/format";
+import { formatInt } from "@/lib/format";
 import { usePartnerDashboard } from "@/lib/partner-dashboard";
 
 export default function PartnerHome() {
@@ -16,7 +16,7 @@ export default function PartnerHome() {
       description="نمای کلی حساب و دسترسی به بخش‌های اصلی" />
     {error && <div className="mb-4"><Banner>{error}</Banner></div>}
     {data ? <div className="pc-partner-metrics">
-      <Wallet amount={formatToman(data.balance_toman)} />
+      <Wallet amount={data.balance_toman} />
       <Link href="/partner/subscriptions" className="pc-card pc-count">
         <IconTile name="layers" />
         <span className="pc-quiet">تعداد اشتراک</span>

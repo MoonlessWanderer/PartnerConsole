@@ -49,10 +49,14 @@ export default function DesignPage() {
         </section>
         <section className="pc-card space-y-4">
           <h2 className="pc-section-title">کنترل‌ها و وضعیت‌ها</h2>
-          <div className="flex flex-wrap items-center gap-2">
-            <Button><Icon name="plus"/>عملیات اصلی</Button><Button tone="ghost">عملیات ثانویه</Button>
-            <Button tone="danger"><Icon name="trash"/>عملیات حساس</Button>
-            <Badge tone="ok">فعال</Badge><Badge tone="warn">نیازمند بررسی</Badge><Badge tone="bad">مسدود</Badge>
+          <div className="pc-showcase-controls">
+            <div className="pc-showcase-buttons">
+              <Button><Icon name="plus"/>عملیات اصلی</Button><Button tone="ghost">عملیات ثانویه</Button>
+              <Button tone="danger"><Icon name="trash"/>عملیات حساس</Button>
+            </div>
+            <div className="pc-showcase-status">
+              <Badge tone="ok">فعال</Badge><Badge tone="warn">نیازمند بررسی</Badge><Badge tone="bad">مسدود</Badge>
+            </div>
           </div>
           <Field label="نام کاربری"><input className={inputClass} defaultValue="arya_net" dir="ltr"/></Field>
           <Banner tone="ok">اطلاعات · وضعیت و راهنمای مرتبط</Banner>

@@ -318,11 +318,13 @@ export default function SubscriptionDetailPage() {
       </section>
       {action("مصرف و لینک","link",()=>setTab("usage"),"مشاهدهٔ مصرف و کپی لینک")}
     </> : tab==="usage" ? <>
-      <section className="pc-card space-y-3" aria-labelledby="subscription-usage">
+      <section className="pc-card pc-usage-card" aria-labelledby="subscription-usage">
         <h2 id="subscription-usage" className="pc-section-title">مصرف ترافیک</h2>
         {row.live_error&&<Banner>{row.live_error}</Banner>}
-        <div className="flex justify-between gap-2 text-sm"><span>{usageLabel}</span>{percent&&<bdi aria-hidden="true">{percent}</bdi>}</div>
-        {usedShare!==null&&percent!==null&&<progress className="pc-progress" max={1} value={Math.min(usedShare,1)} aria-label="سهم حجم مصرف‌شده" aria-valuetext={percent}/>}
+        <div className="pc-usage-meter">
+          <div className="pc-usage-caption"><span>{usageLabel}</span>{percent&&<bdi aria-hidden="true">{percent}</bdi>}</div>
+          {usedShare!==null&&percent!==null&&<progress className="pc-progress" max={1} value={Math.min(usedShare,1)} aria-label="سهم حجم مصرف‌شده" aria-valuetext={percent}/>}
+        </div>
         <Facts rows={[["دانلود",formatGb(row.live_error?null:nonnegativeGb(row.download_gb))],["آپلود",formatGb(row.live_error?null:nonnegativeGb(row.upload_gb))],
           ["حجم باقی‌مانده",formatGb(remaining)],["سقف مصرف",formatGb(cap)]]}/>
       </section>

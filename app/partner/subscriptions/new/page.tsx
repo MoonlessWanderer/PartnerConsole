@@ -2,7 +2,7 @@
 
 import { DraftLeaveWarning } from "@/components/DraftLeaveWarning";
 
-import { PageHead, Facts } from "@/components/Design";
+import { PageHead, Facts, WalletDebit } from "@/components/Design";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { JalaliDateField } from "@/components/JalaliDateField";
@@ -18,13 +18,14 @@ type PurchaseQuote = Quote & { gb_cost_toman: number; days_cost_toman: number };
 
 const usernamePattern = "[A-Za-z0-9_]{3,32}";
 const validUsername = new RegExp(`^${usernamePattern}$`);
+const initialTrafficGb = "10";
 
 export default function NewSubscriptionPage() {
   const router = useRouter();
   const [reviewSession] = useState(sessionToken);
   const [today] = useState(todayJalali);
   const [products, setProducts] = useState<Product[] | null>(null);
-  const [draft, setDraft] = useState({ product_id: 0, username: "", traffic_cap_gb: "10", end_date: "", note: "" });
+  const [draft, setDraft] = useState({ product_id: 0, username: "", traffic_cap_gb: initialTrafficGb, end_date: "", note: "" });
   const [calendarOpen, setCalendarOpen] = useState(false);
   const [reviewOpen, setReviewOpen] = useState(false);
   const heading = useRef<HTMLHeadingElement>(null);
@@ -45,6 +46,8 @@ export default function NewSubscriptionPage() {
   const canQuote = !!product && validUsername.test(draft.username) && Number.isInteger(volume) &&
     volume >= 1 && volume <= 1_000_000 && !!parseJalali(draft.end_date) && draft.end_date > today;
   const inputsLocked = pending || Boolean(followUp);
+  const dirty = Boolean(draft.username || draft.note || draft.end_date) ||
+    draft.traffic_cap_gb !== initialTrafficGb || draft.product_id !== (products?.[0]?.id ?? 0);
   useEffect(() => {
     if (reviewOpen) heading.current?.focus();
   }, [reviewOpen]);
@@ -130,7 +133,7 @@ export default function NewSubscriptionPage() {
 
   return (
     <div className={styles.page}>
-      <DraftLeaveWarning dirty={!inputsLocked && Boolean(draft.username || draft.note || draft.end_date)}/>
+      <DraftLeaveWarning dirty={!inputsLocked && dirty}/>
       <PageHead title={reviewOpen ? "بررسی پیش‌فاکتور" : "ساخت اشتراک"} back={{href:"/partner/subscriptions",label:"اشتراک‌ها"}} />
       <form className={styles.layout} data-review={reviewOpen} onSubmit={submit}>
         <section className={styles.card+" pc-purchase-fields"} aria-labelledby="purchase-fields" hidden={reviewOpen}>
@@ -221,10 +224,13 @@ export default function NewSubscriptionPage() {
                 <div><dt>نام کاربری</dt><dd><bdi dir="ltr">{request.draft.username.toLowerCase()}</bdi></dd></div>
                 <div><dt>محصول</dt><dd>{quote.product_name}</dd></div>
               </dl>
-              <dl className={styles.credit} aria-label="از اعتبار محصول">
-                <div><dt>اعتبار حجم مصرفی</dt><dd>{formatGb(quote.gb_from_credit)}</dd></div>
-                <div><dt>اعتبار روز مصرفی</dt><dd>{formatDays(quote.days_from_credit)}</dd></div>
-              </dl>
+              <section className={styles.credit} aria-labelledby="purchase-credit-title">
+                <h3 id="purchase-credit-title">از اعتبار محصول</h3>
+                <dl>
+                  <div><dt>اعتبار حجم مصرفی</dt><dd>{formatGb(quote.gb_from_credit)}</dd></div>
+                  <div><dt>اعتبار روز مصرفی</dt><dd>{formatDays(quote.days_from_credit)}</dd></div>
+                </dl>
+              </section>
               <PurchaseWalletBreakdown
                 gb={quote.gb_paid} days={quote.days_paid}
                 gbRate={quote.price_per_gb} dayRate={quote.price_per_day}
@@ -234,9 +240,7 @@ export default function NewSubscriptionPage() {
                 {quote.message && <span>{quote.message}</span>}
                 {quote.shortage_toman > 0 && <>کسری موجودی <strong>{formatToman(quote.shortage_toman)}</strong></>}
               </p>}
-              <dl className={styles.total}>
-                <div><dt>برداشت از کیف پول</dt><dd>{formatToman(quote.toman)}</dd></div>
-              </dl>
+              <WalletDebit amount={quote.toman} />
             </>
           ) : !quoteError && (
             <p className={styles.empty} role="status">

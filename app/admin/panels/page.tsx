@@ -27,6 +27,7 @@ export default function PanelsPage() {
   const formView=editing || pathname === root+"/new";
   const [items,setItems]=useState<Panel[]|null>(null);
   const [form,setForm]=useState(blank);
+  const initialForm=useRef(blank);
   const [error,setError]=useState("");
   const [notice,setNotice]=useState("");
   const [pending,setPending]=useState("");
@@ -44,7 +45,10 @@ export default function PanelsPage() {
       if (!active) return;
       setItems(result.items);
       const panel=result.items.find(item=>String(item.id)===params.id);
-      if (panel) setForm({name:panel.name,base_url:panel.base_url,secure_path:panel.secure_path,admin_email:panel.admin_email,admin_password:"",status:panel.status});
+      if (panel) {
+        initialForm.current={name:panel.name,base_url:panel.base_url,secure_path:panel.secure_path,admin_email:panel.admin_email,admin_password:"",status:panel.status};
+        setForm(initialForm.current);
+      }
     }).catch(err=>{ if(active) setError(err.message); });
     return ()=>{active=false;};
   },[params.id]);
@@ -76,12 +80,13 @@ export default function PanelsPage() {
   }
 
   const panel=items?.find(item=>String(item.id)===params.id);
+  const dirty=Object.entries(form).some(([key,value])=>value!==initialForm.current[key as keyof typeof form]);
   const feedback=<>{error && <Banner>{error}</Banner>}{notice && <Banner tone="ok">{notice}</Banner>}</>;
   if (formView) return <div className="space-y-4">
     <PageHead title={editing?"ویرایش پنل":"افزودن پنل"} back={{href:root,label:"پنل‌ها"}}
       action={panel&&<Button tone="ghost" disabled={Boolean(pending)} onClick={()=>test(panel.id)}><Icon name="reset"/>تست اتصال</Button>} />
     {feedback}
-    <DraftLeaveWarning dirty={Boolean(form.admin_password) && pending !== "save"}/>
+    <DraftLeaveWarning dirty={dirty && pending !== "save"}/>
     {editing&&!panel ? <p role="status" className="pc-card">{items?"پنل پیدا نشد.":error?"اطلاعات پنل در دسترس نیست.":"در حال بارگیری پنل…"}</p> :
       <div className="pc-grid-two">
         <form className="pc-card pc-form-card" onSubmit={save}>

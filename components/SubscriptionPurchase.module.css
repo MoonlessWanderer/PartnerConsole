@@ -79,18 +79,17 @@
 }
 
 .productFacts > div,
-.credit > div,
-.wallet > div,
-.total > div {
+.credit dl > div,
+.wallet > div {
   display: flex;
   gap: 6px;
   justify-content: space-between;
   align-items: baseline;
 }
 
-.productFacts dt, .wallet dt { color: var(--quiet); }
+.productFacts dt, .credit dt, .wallet dt { color: var(--quiet); }
 .productFacts dd, .credit dd, .wallet dd { font-weight: 700; }
-.productFacts dd, .wallet dd { white-space: nowrap; }
+.productFacts dd, .credit dd, .wallet dd { min-width: 0; text-align: end; overflow-wrap: anywhere; }
 
 .fieldsRow { display: grid; grid-template-columns: 2fr 1fr; gap: 10px; }
 
@@ -134,33 +133,23 @@
 .quoteHeading p { color: var(--quiet); font-size: 13px; }
 
 .credit {
-  margin-block: 11px;
-  padding: 9px 10px;
-  border-radius: 8px;
-  background: var(--pc-info-bg);
+  margin-block: 12px;
+  padding-block: 10px;
+  border-block: 1px solid var(--line);
   font-size: 13px;
 }
 
 .quote h3 { font-size: 13px; font-weight: 700; }
+.credit h3 { margin-block-end: 4px; }
 
 .wallet {
   display: grid;
-  gap: 5px;
-  margin-block: 6px 11px;
+  gap: 4px;
+  margin-block: 4px 12px;
   font-size: 13px;
 }
-
-.total {
-  margin-block: 11px 7px;
-  padding: 8px 10px;
-  border-radius: 8px;
-  background: var(--tint);
-  color: var(--pc-brand-deep);
-}
-
-.total > div { flex-wrap: wrap; gap: 3px 9px; }
-.total dt { font-size: 13px; font-weight: 700; }
-.total dd { font-size: clamp(20px, 2vw, 25px); font-weight: 700; }
+.wallet dt { min-width:0; overflow-wrap:anywhere; }
+.quote :global(.pc-quote-total) { margin-block: 12px 10px; }
 
 .submit {
   display: block;
@@ -199,7 +188,8 @@
   .page h1 { font-size: 22px; margin-block-end: 11px; }
   .card { padding: 14px; }
   .productFacts { gap: 5px 9px; padding-inline: 7px; }
-  .credit, .total { padding-inline: 8px; }
+  .field { gap:4px; margin-block-start:10px; }
+  .quote :global(.pc-quote-total) { padding-inline:10px; }
 }
 
 
@@ -213,7 +203,7 @@
 .identity > div { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
 .identity dt { color: var(--quiet); flex-shrink: 0; }
 .identity dd { min-width: 0; text-align: left; overflow-wrap: anywhere; font-weight: 700; }
-.credit > div + div { margin-block-start: 3px; }
+.credit dl > div + div { margin-block-start: 3px; }
 
 .layout[data-review="true"] { grid-template-columns:minmax(0,7fr) minmax(0,5fr); }
 .layout[data-review="true"] .quote { grid-column:1; }

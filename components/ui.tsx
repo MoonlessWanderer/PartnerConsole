@@ -50,7 +50,7 @@ export function Field({
     ? children as ReactElement<{ id?: string }> : null;
   const controlId = control ? control.props.id || labelId : undefined;
   return (
-    <div className="block space-y-1.5 text-sm" role={control ? undefined : "group"}
+    <div className="pc-field" role={control ? undefined : "group"}
       aria-labelledby={control ? undefined : labelId}>
       {control
         ? <label htmlFor={controlId} className="block pc-field-label">{label}</label>

@@ -3,6 +3,7 @@
 import { DraftLeaveWarning } from "@/components/DraftLeaveWarning";
 
 import { useEffect, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import { useParams } from "next/navigation";
 import { api } from "@/lib/api";
 import { faDigits, formatGb, formatInt, formatToman } from "@/lib/format";
@@ -51,7 +52,7 @@ function PanelStateView({ op }: { op: OperationDetail }) {
   if (!state.exists) return <div>روی پنل: کاربر وجود ندارد.</div>;
   if (!state.owned) return <Banner tone="warn">کاربر این شناسه روی پنل متعلق به این اشتراک نیست؛ جزئیات آن نمایش داده نمی‌شود.</Banner>;
   return (
-    <div className="rounded-xl bg-slate-50 p-3">
+    <div className="pc-operation-panel-state">
       <div className="font-medium">وضعیت فعلی پنل (فقط خواندنی)</div>
       <div>سقف: {formatGb(state.transfer_enable_gb)} · مصرف: {formatGb(state.used_gb)}</div>
       <div>انقضا: {state.expired_jalali ? faDigits(state.expired_jalali) : "—"} · {state.banned ? "مسدود" : "فعال"}</div>
@@ -62,28 +63,31 @@ function PanelStateView({ op }: { op: OperationDetail }) {
 function EffectsView({ op, decision }: { op: Operation; decision: Decision }) {
   const result = effects(op, decision);
   return (
-    <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 rounded-xl border border-slate-200 p-3">
-      <dt className="font-medium">کیف پول و اعتبار</dt><dd>{result.wallet}</dd>
-      <dt className="font-medium">دفتر حساب</dt><dd>{result.ledger}</dd>
-      <dt className="font-medium">پنل</dt><dd>{result.panel}</dd>
-    </dl>
+    <div className="pc-operation-effects">
+      <Facts rows={[["کیف پول و اعتبار", result.wallet], ["دفتر حساب", result.ledger], ["پنل", result.panel]]}/>
+    </div>
   );
 }
 
 function Amounts({ op }: { op: Operation }) {
+  const rows: Array<[string, ReactNode]> = [
+    ["نوع", KIND_LABEL[op.kind] || op.kind],
+    ["کاربر", <bdi dir="ltr">{op.username || "—"}</bdi>],
+    ["همکار · محصول", `#${faDigits(op.partner_id)} · #${faDigits(op.product_id)}`],
+  ];
+  if (op.charge_toman) rows.push(["هزینهٔ گرفته‌شده", formatToman(op.charge_toman)]);
+  if (Number(op.charge_gb_from_credit || 0) > 0) rows.push(["از اعتبار گیگ", formatGb(op.charge_gb_from_credit)]);
+  if (Number(op.charge_days_from_credit || 0) > 0) rows.push(["از اعتبار روز", `${formatInt(op.charge_days_from_credit)} روز`]);
+  if (op.gb_back) rows.push(["اعتبار برگشتی", `${formatGb(op.gb_back)} و ${formatInt(op.days_back)} روز`]);
+  if (op.new_cap_gb) rows.push(["سقف", `${op.old_cap_gb ? `${formatGb(op.old_cap_gb)} ← ` : ""}${formatGb(op.new_cap_gb)}`]);
+  rows.push(["ارسال به پنل", op.panel_applied ? "اعمال‌شده" : op.panel_sent ? "فرستاده شده، نتیجه نامعلوم" : "فرستاده نشده"]);
+
   return (
     <>
-      <div>نوع: {KIND_LABEL[op.kind] || op.kind} · کاربر: {op.username || "—"}</div>
-      <div>همکار #{faDigits(op.partner_id)} · محصول #{faDigits(op.product_id)}</div>
-      {op.charge_toman ? <div>هزینهٔ گرفته‌شده: {formatToman(op.charge_toman)}</div> : null}
-      {Number(op.charge_gb_from_credit || 0) > 0 ? <div>از اعتبار گیگ: {formatGb(op.charge_gb_from_credit)}</div> : null}
-      {Number(op.charge_days_from_credit || 0) > 0 ? <div>از اعتبار روز: {formatInt(op.charge_days_from_credit)} روز</div> : null}
-      {op.gb_back ? <div>اعتبار برگشتی: {formatGb(op.gb_back)} و {formatInt(op.days_back)} روز</div> : null}
-      {op.new_cap_gb ? <div>سقف: {op.old_cap_gb ? `${formatGb(op.old_cap_gb)} ← ` : ""}{formatGb(op.new_cap_gb)}</div> : null}
+      <Facts rows={rows}/>
       {hasShortfall(op) ? (
         <Banner tone="warn">اختلاف مالی باقی‌مانده: {formatGb(op.shortfall_gb)} و {formatInt(op.shortfall_days)} روز</Banner>
       ) : null}
-      <div>ارسال به پنل: {op.panel_applied ? "اعمال‌شده" : op.panel_sent ? "فرستاده شده، نتیجه نامعلوم" : "فرستاده نشده"}</div>
       {op.last_error ? <Banner>{shownError(op.last_error)}</Banner> : null}
       {op.resolution ? <div>تصمیم قبلی: {op.resolution === "close" ? "بستن عملیات" : "تلاش دوباره"} — {op.resolution_note || ""}</div> : null}
     </>
@@ -181,7 +185,7 @@ export default function AdminOperations() {
 
   if(!id) return <div className="space-y-4">
     <PageHead title="عملیات ناتمام" description="پیگیری وضعیت و تصمیم‌های بازیابی" />
-    <div className="pc-tabs" role="group" aria-label="فیلتر وضعیت">
+    <div className="pc-tabs pc-operation-filters" role="group" aria-label="فیلتر وضعیت">
       {FILTERS.map(item=><button type="button" key={item.value||"all"} aria-pressed={filter===item.value}
         onClick={()=>{const url=new URL(window.location.href);url.searchParams.set("status",item.value);window.history.replaceState(null,"",url);setFilter(item.value);}}>{item.label}</button>)}
     </div>
@@ -202,7 +206,7 @@ export default function AdminOperations() {
       back={{href:listHref,label:"عملیات ناتمام"}}/>
     {error && <Banner>{error}</Banner>}
     {notice && <Banner tone="ok">{notice}</Banner>}
-    <DraftLeaveWarning dirty={(resolving || Boolean(confirmation)) && !submitting && Boolean(form.note.trim())}/>
+    <DraftLeaveWarning dirty={resolving && !submitting && Boolean(form.decision || form.note.trim() || form.checkedPanel)}/>
     {!current ? !error&&<p role="status" className="pc-card">در حال بارگیری عملیات…</p> : confirmation ? (
       <section className="pc-card pc-form-card mx-auto max-w-2xl">
         <h2 className="pc-section-title">{decisionLabel(current, form.decision as Decision)}</h2>
@@ -228,11 +232,11 @@ export default function AdminOperations() {
             <textarea className={inputClass+" min-h-24"} maxLength={NOTE_MAX} value={form.note} onChange={e=>setForm({...form,note:e.target.value})}/>
           </Field>
           {form.decision==="close"&&hasShortfall(current)&&<label className="flex items-start gap-2 text-sm">
-            <input type="checkbox" className="mt-1" checked={form.acceptShortfall} onChange={e=>setForm({...form,acceptShortfall:e.target.checked})}/>
+            <input type="checkbox" className="mt-1 pc-operation-check" checked={form.acceptShortfall} onChange={e=>setForm({...form,acceptShortfall:e.target.checked})}/>
             <span>اختلاف {formatGb(current.shortfall_gb)} و {formatInt(current.shortfall_days)} روز را می‌پذیرم؛ این مقدار دیگر پس گرفته نمی‌شود.</span>
           </label>}
           <label className="flex items-start gap-2 text-sm">
-            <input type="checkbox" className="mt-1" checked={form.checkedPanel} onChange={e=>setForm({...form,checkedPanel:e.target.checked})}/>
+            <input type="checkbox" className="mt-1 pc-operation-check" checked={form.checkedPanel} onChange={e=>setForm({...form,checkedPanel:e.target.checked})}/>
             <span>وضعیت پنل را بررسی کردم و پیامد این تصمیم را می‌دانم.</span>
           </label>
           {problem&&form.decision&&<p className="pc-quiet">{problem}</p>}
@@ -247,7 +251,7 @@ export default function AdminOperations() {
     ) : <>
       <Badge tone={statusTone(current.status)}>{OPERATION_STATUS_LABEL[current.status]||current.status}</Badge>
       <div className="pc-grid-two">
-        <section className="pc-card space-y-2 text-sm"><h2 className="pc-section-title">خلاصه عملیات</h2><Amounts op={current}/></section>
+        <section className="pc-card pc-operation-summary space-y-2 text-sm"><h2 className="pc-section-title">خلاصه عملیات</h2><Amounts op={current}/></section>
         <section className="pc-card space-y-2 text-sm"><h2 className="pc-section-title">وضعیت فعلی پنل</h2><PanelStateView op={current}/></section>
       </div>
       <section className="pc-card space-y-2">

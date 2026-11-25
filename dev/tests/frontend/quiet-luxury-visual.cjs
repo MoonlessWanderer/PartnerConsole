@@ -98,6 +98,20 @@ async function capture(p, id, size) {
     direction: document.documentElement.dir,
     viewport: document.documentElement.clientWidth,
     width: document.documentElement.scrollWidth,
+    geometry: Object.fromEntries(Object.entries({
+      header: ".pc-top", sidebar: ".pc-side", bottomNavigation: ".pc-mobile-nav",
+      heading: "main h1, .pc-login-heading h1", form: "main form, .pc-login-form",
+      firstSurface: "main .pc-card, main .pc-table, main .pc-wallet, .pc-login-form",
+      firstRow: "main tbody tr, main .pc-table-row", wallet: ".pc-wallet",
+      walletAmount: ".pc-wallet strong", walletBrand: ".pc-wallet-brand", walletCaption: ".pc-wallet-caption span",
+      quoteTotal: ".pc-quote-total", trafficMeter: ".pc-progress",
+    }).flatMap(([name, selector]) => {
+      const node = [...document.querySelectorAll(selector)].find(element => element.getClientRects().length);
+      if (!node) return [];
+      const { x, y, width, height } = node.getBoundingClientRect();
+      const { fontSize, fontWeight } = getComputedStyle(node);
+      return [[name, { x, y, width, height, fontSize, fontWeight }]];
+    })),
   }));
   assert.match(layout.font, /^Vazirmatn/);
   assert.ok(layout.persian && layout.latin);
@@ -109,9 +123,26 @@ async function capture(p, id, size) {
   assert.ok(layout.fontFiles.every(url => url.startsWith("/fonts/vazirmatn/")));
   assert.equal(layout.direction, "rtl");
   assert.ok(layout.width <= layout.viewport + 1, JSON.stringify(layout));
+  const { walletBrand, walletCaption } = layout.geometry;
+  if (walletBrand && walletCaption) {
+    assert.ok(walletBrand.x + walletBrand.width <= walletCaption.x, "Wallet brand belongs to the left of the caption in RTL");
+  }
+  const cdp = await p.context().newCDPSession(p);
+  const namedRoles = new Set(["button", "CheckBox", "checkbox", "combobox", "dialog", "link", "progressbar", "radio", "searchbox", "slider", "spinbutton", "textbox"]);
+  let accessibility;
+  try {
+    const { nodes } = await cdp.send("Accessibility.getFullAXTree");
+    const namedControls = nodes.filter(node => !node.ignored && namedRoles.has(node.role?.value));
+    const unnamed = namedControls.filter(node => !node.name?.value?.trim()).map(node => node.role.value);
+    assert.deepEqual(unnamed, [], "Interactive elements need accessible names");
+    accessibility = { namedControls: namedControls.length };
+  } finally {
+    await cdp.detach();
+  }
   const filename = String(id).padStart(2, "0") + "-" + size + ".png";
-  await p.screenshot({ path: path.join(output, filename), animations: "disabled", mask: hiddenValues(p), maskColor: "#e3e3dc" });
-  return { file: filename, layout };
+  await p.screenshot({ path: path.join(output, filename), animations: "disabled", mask: hiddenValues(p), maskColor: "#e3e3dc",
+    ...(id === 39 ? { style: "nextjs-portal { visibility: hidden !important; }" } : {}) });
+  return { file: filename, layout, accessibility };
 }
 
 async function login(p, role, id, size, origin = web) {
@@ -265,9 +296,12 @@ async function inspectDesign(browser, size, viewport) {
   const ctx = await context(browser, viewport);
   try {
     const p = await ctx.newPage();
+    const errors = [];
+    p.on("pageerror", error => errors.push(error.message));
     await p.goto(designWeb + "/design");
     await h1(p, "سیستم طراحی").waitFor();
     result.push({ id: 39, size, ...(await capture(p, 39, size)) });
+    assert.deepEqual(errors, [], "No unhandled design preview errors");
   } finally {
     await ctx.close();
   }

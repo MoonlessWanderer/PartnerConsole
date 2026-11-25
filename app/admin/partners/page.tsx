@@ -169,7 +169,7 @@ export default function PartnersPage() {
           {selected.banned?"رفع مسدودیت همکار":"مسدود کردن همکار"}</Button><ActionLink href={base} secondary>انصراف</ActionLink></div>
       </section> : <>
         <div className="pc-grid-two">
-          <Wallet amount={formatToman(selected.balance_toman)}/>
+          <Wallet amount={selected.balance_toman}/>
           <section className="pc-card"><h2 className="pc-section-title">اطلاعات حساب</h2>
             <Facts rows={[["نام کاربری",<bdi dir="ltr">{selected.username}</bdi>],["وضعیت",badge(selected)]]}/></section>
         </div>

@@ -9,13 +9,14 @@
 
 .empty { padding: 18px; color: var(--quiet); }
 .table { width: 100%; text-align: right; font-size: 13px; }
-.table :is(th, td) { padding: 13px 11px; vertical-align: middle; overflow-wrap: anywhere; }
+.table :is(th, td) { padding: 11px 14px; vertical-align: middle; overflow-wrap: anywhere; }
 .table thead th { color: var(--pc-brand-deep); background: var(--pc-info-bg); font-weight: 700; }
 .table thead th:first-child { border-start-start-radius: 13px; }
 .table thead th:last-child { border-start-end-radius: 13px; }
 .table tbody tr { border-block-start: 1px solid var(--line); }
 .table tbody th { font-weight: 700; background: transparent; }
-.table :is(td:nth-child(2), td:last-child) { white-space: nowrap; }
+.table td:last-child { white-space: nowrap; }
+.table tbody tr:focus-within { background: var(--pc-info-bg); }
 
 .change {
   display: inline-grid;
@@ -48,16 +49,19 @@
   outline-offset: 3px;
 }
 
+.subscription bdi { min-width: 0; overflow-wrap: anywhere; }
+
 .list { display: none; }
 
 @media (max-width: 760px) {
   .table { display: none; }
   .list { display: block; padding-inline: 13px; }
-  .list li { display: grid; gap: 4px; padding-block: 11px; }
+  .list li { display: grid; gap: 4px; padding-block: 8px; }
   .list li + li { border-block-start: 1px solid var(--line); }
   .subscription { min-height: 44px; }
   .line {
     display: flex;
+    flex-wrap: wrap;
     justify-content: space-between;
     align-items: baseline;
     gap: 6px 12px;
@@ -65,8 +69,11 @@
     font-size: 12px;
   }
   .line:first-child { font-size: 14px; color: var(--pc-text); }
-  .line > span:first-child { min-width: 0; overflow-wrap: anywhere; }
-  .line > :last-child { flex-shrink: 0; }
+  .line > :first-child { min-width: 0; overflow-wrap: anywhere; }
+  .line > :last-child { margin-inline-start: auto; }
+  .line .change { grid-template-columns: minmax(0, max-content) max-content; max-width: 100%; }
+  .line .change bdi { overflow-wrap: anywhere; }
+  .line :global(.pc-icon-tile) { width: 30px; height: 30px; }
   .rowMeta { display: flex; flex-wrap: wrap; align-items: center; gap: 0 7px; }
 }
 

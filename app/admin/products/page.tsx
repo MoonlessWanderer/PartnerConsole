@@ -119,7 +119,7 @@ export default function ProductsPage() {
               <input className={inputClass} value={form.email_domain} onChange={(e) => setForm({ ...form, email_domain: e.target.value })} placeholder="gold.example.com" required />
             </Field>
             <p className="text-xs leading-6 text-amber-800">دامنه باید از اعتبارسنجی email:strict پنل رد شود. از .local پرهیز کنید مگر پنل شما آن را بپذیرد.</p>
-            <div className="grid gap-3 sm:grid-cols-2">
+            <div className="pc-form-pair">
               <Field label="تومان هر گیگ"><input className={inputClass} type="number" min={0} value={form.price_per_gb} onChange={(e) => setForm({ ...form, price_per_gb: Number(e.target.value) })} required /></Field>
               <Field label="تومان هر روز"><input className={inputClass} type="number" min={0} value={form.price_per_day} onChange={(e) => setForm({ ...form, price_per_day: Number(e.target.value) })} required /></Field>
             </div>

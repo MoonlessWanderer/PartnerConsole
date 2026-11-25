@@ -1,7 +1,7 @@
 "use client";
 
 import type { ReactNode } from "react";
-import { Facts } from "@/components/Design";
+import { Facts, WalletDebit } from "@/components/Design";
 import { Banner } from "@/components/ui";
 import type { Quote } from "@/lib/types";
 import { formatDate, formatDays, formatGb, formatToman } from "@/lib/format";
@@ -24,9 +24,7 @@ export function QuoteBox({ quote }: { quote: Quote | null }) {
   return (
     <div className="space-y-3 text-sm">
       <Facts rows={rows}/>
-      <div className="pc-quote-total">
-        <Facts rows={[["برداشت از کیف پول", formatToman(quote.toman)]]}/>
-      </div>
+      <WalletDebit amount={quote.toman} />
       {quote.message ? <Banner>{quote.message}</Banner> :
         !quote.affordable && <Banner>کسری موجودی: {formatToman(quote.shortage_toman)}</Banner>}
     </div>

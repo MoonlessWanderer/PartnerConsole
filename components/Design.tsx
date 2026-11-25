@@ -1,6 +1,7 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { Icon, IconTile, type IconName } from "@/components/Icons";
+import { formatInt } from "@/lib/format";
 
 export function PageHead({ title, description, action, back }: {
   title: ReactNode; description?: string; action?: ReactNode; back?: { href: string; label: string };
@@ -34,13 +35,24 @@ export function NavRow({ href, icon, title, description }: {
   </Link>;
 }
 
-export function Wallet({ amount }: { amount: string }) {
+function TomanAmount({ amount }: { amount: string | number }) {
+  return <span className="pc-money pc-financial"><bdi dir="ltr">{formatInt(amount)}</bdi>{" "}<span>تومان</span></span>;
+}
+
+export function Wallet({ amount }: { amount: string | number }) {
   return <section className="pc-wallet pc-financial" aria-label="موجودی کیف پول">
     <IconTile name="wallet" />
-    <div className="text-sm">موجودی کیف پول</div>
-    <strong>{amount}</strong>
-    <small dir="ltr" className="justify-self-end">PARTNERCONSOLE</small>
+    <div className="pc-wallet-label">موجودی کیف پول</div>
+    <strong><TomanAmount amount={amount} /></strong>
+    <div className="pc-wallet-caption"><span>موجودی قابل استفاده</span></div>
+    <small className="pc-wallet-brand" aria-hidden="true"><bdi dir="ltr">PARTNERCONSOLE</bdi></small>
   </section>;
+}
+
+export function WalletDebit({ amount }: { amount: number }) {
+  return <dl className="pc-quote-total"><div>
+    <dt>برداشت از کیف پول</dt><dd><TomanAmount amount={amount} /></dd>
+  </div></dl>;
 }
 
 export function Facts({ rows }: { rows: Array<[ReactNode, ReactNode]> }) {
@@ -57,7 +69,7 @@ type ResponsiveRow = {
 };
 
 export function ResponsiveTable({ label, columns, rows, empty = "رکوردی برای نمایش وجود ندارد.", icon }: {
-  label: string; columns: string[]; rows: ResponsiveRow[]; empty?: string; icon: IconName;
+  label: string; columns: string[]; rows: ResponsiveRow[]; empty?: string; icon?: IconName;
 }) {
   if (!rows.length) return <p className="pc-card text-sm pc-quiet" role="status">{empty}</p>;
   return <div className="pc-table-wrap">
@@ -68,13 +80,14 @@ export function ResponsiveTable({ label, columns, rows, empty = "رکوردی ب
       </table>
     </div>
     <ul className="pc-card pc-list pc-table-mobile !p-0" aria-label={label}>
-      {rows.map(row => <li className="pc-list-row" key={row.id}>
-        <IconTile name={icon} />
-        <div className="min-w-0 flex-1">
-          <div className="break-words text-sm font-bold">{row.title}</div>
-          {row.summary && <div className="break-words pc-quiet">{row.summary}</div>}
+      {rows.map(row => <li className="pc-table-row" key={row.id}>
+        <div className="pc-table-row-heading">
+          {icon && <IconTile name={icon} />}
+          <div className="pc-table-row-title">{row.title}</div>
+          {row.aside && <div className="pc-table-row-aside">{row.aside}</div>}
         </div>
-        <div className="flex shrink-0 flex-wrap items-center justify-end gap-1">{row.aside}{row.action}</div>
+        {row.summary && <div className="pc-table-row-summary pc-quiet">{row.summary}</div>}
+        {row.action && <div className="pc-table-row-action">{row.action}</div>}
       </li>)}
     </ul>
   </div>;

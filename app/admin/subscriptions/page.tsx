@@ -104,7 +104,7 @@ function Detail({ id }: { id:string }) {
           {row.live_error ? <Banner>{row.live_error}</Banner> : <>
             {used!==null&&Number.isFinite(used)&&cap>0&&<progress className="pc-progress" value={Math.min(used,cap)} max={cap} aria-label="مصرف ترافیک"/>}
             <Facts rows={[["مصرف",formatGb(row.used_gb)],["دانلود",formatGb(row.download_gb)],["آپلود",formatGb(row.upload_gb)]]}/>
-            {row.subscribe_url ? <div className="flex gap-2"><input className={inputClass} dir="ltr" readOnly aria-label="لینک اشتراک" value={row.subscribe_url}/><Button tone="ghost" onClick={copy}><Icon name="copy"/>کپی</Button></div>:
+            {row.subscribe_url ? <div className="pc-copy-control"><input className={inputClass} dir="ltr" readOnly aria-label="لینک اشتراک" value={row.subscribe_url}/><Button tone="ghost" onClick={copy}><Icon name="copy"/>کپی</Button></div>:
              <span className="pc-quiet">لینک از پنل دریافت نشد.</span>}
           </>}
         </section>
