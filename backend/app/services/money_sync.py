@@ -365,6 +365,29 @@ def _clawback(db, op: PanelOperation, data: dict, subs) -> bool:
     return True
 
 
+def _deferred_refund(data: dict) -> bool:
+    # Old journal rows have no marker: their refund was credited when the row was opened.
+    return data.get("refund_deferred") is True
+
+
+def _settle_refund(db: Session, op: PanelOperation, data: dict) -> None:
+    """Stage the reserved credit in the same transaction as the lease-fenced completion."""
+    if not data.get("panel_applied"):
+        raise RuntimeError("a reserved refund requires a confirmed panel operation")
+    gb = qgb(data["gb_back"])
+    days = int(data["days_back"])
+    if not gb and not days:
+        return
+    subs = _subs()
+    subs.lock_partner_row(db, op.partner_id, allow_banned=True)
+    credit = subs.lock_credit(db, op.partner_id, op.product_id)
+    deleting = op.kind == "delete"
+    subs._give_credit(
+        db, credit, op.partner_id, op.product_id, None if deleting else op.subscription_id,
+        gb, days, "delete_refund" if deleting else "decrease", _actor(data, subs),
+    )
+
+
 def _revert_cap(db, op: PanelOperation, data: dict) -> None:
     sub = db.get(Subscription, op.subscription_id) if op.subscription_id else None
     if sub is None:
@@ -444,9 +467,12 @@ def _compensate(db, op: PanelOperation, gateway, exc: BaseException) -> None:
         _mark(db, op, data, "failed", exc)
         return
     if kind in {"decrease", "delete"}:
+        deferred = _deferred_refund(data)
+        if deferred:
+            subs.lock_partner_row(db, op.partner_id, allow_banned=True)
         if kind == "decrease":
             _revert_cap(db, op, data)
-        if not _clawback(db, op, data, subs):
+        if not deferred and not _clawback(db, op, data, subs):
             _mark(
                 db,
                 op,
@@ -596,7 +622,7 @@ def _db_failure(exc: BaseException) -> bool:
 
 def _possibly_sent(data: dict) -> bool:
     # A mutating panel request was committed as sent; its effect may exist without panel_applied.
-    return any(data.get(key) for key in ("panel_sent", "reset_sent", "generate_sent"))
+    return any(data.get(key) for key in ("panel_sent", "reset_sent", "generate_sent", "refund_prior_send"))
 
 
 def _keep_for_recovery(db: Session, op_id: int, exc: BaseException) -> None:
@@ -625,6 +651,8 @@ def _send_marked(db: Session, op: PanelOperation, data: dict, call) -> None:
     """Commit panel_sent before a mutating panel request; clear it when no connection was made."""
     if data.get("panel_sent"):
         _count_resend(db, op, data)
+        if _deferred_refund(data):
+            data["refund_prior_send"] = True
     data["panel_sent"] = True
     _write(db, op, data)
     try:
@@ -671,8 +699,9 @@ def _inspect(db: Session, op_id: int, gateway, exc: BaseException | None = None)
             return "unknown"
         if kind in {"create", "increase", "decrease"}:
             user_id = data.get("v2_user_id")
-            if not user_id and op.subscription_id:
-                sub = db.get(Subscription, op.subscription_id)
+            deferred_decrease = kind == "decrease" and _deferred_refund(data)
+            sub = db.get(Subscription, op.subscription_id) if op.subscription_id and not user_id else None
+            if not user_id:
                 user_id = sub.v2_user_id if sub is not None else None
             if not user_id:
                 return "unknown"
@@ -682,11 +711,15 @@ def _inspect(db: Session, op_id: int, gateway, exc: BaseException | None = None)
                 if kind == "create" and state == "missing":
                     return "reverse"
                 return "unknown"
+            if deferred_decrease and not _subs().owns_panel_user(user, _panel_email(op, data, sub)):
+                return "attention" if _possibly_sent(data) else "reverse"
             if kind == "create":
                 matched = _same_quota(user, data["cap_gb"], data["expired_at"])
             else:
                 matched = _same_quota(user, data["new_cap"], data["new_expired_at"])
             if matched is True:
+                if deferred_decrease and not _possibly_sent(data):
+                    return "unknown"
                 data["panel_applied"] = True
                 _write(db, op, data)
                 return "finish"
@@ -694,9 +727,10 @@ def _inspect(db: Session, op_id: int, gateway, exc: BaseException | None = None)
                 return "reverse"
             previous = None if kind == "create" else _same_quota(user, data["old_cap"], data["old_expired_at"])
             # An old reading after a sent update proves nothing: behind a proxy error it may land later.
-            if matched is False and previous is True and (not _change_maybe_sent(data) or _panel_rejected(exc)):
+            if (matched is False and previous is True and not data.get("refund_prior_send")
+                    and (not _change_maybe_sent(data) or _panel_rejected(exc))):
                 return "reverse"
-            if matched is False and _change_maybe_sent(data):
+            if matched is False and (_change_maybe_sent(data) or data.get("refund_prior_send")):
                 return "attention"
             return "unknown"
         if kind == "reset_traffic":
@@ -715,13 +749,18 @@ def _inspect(db: Session, op_id: int, gateway, exc: BaseException | None = None)
             _write(db, op, data)
             return "attention"
         if kind == "delete":
-            _user, state = _read_remote(gateway, user_id=int(data["v2_user_id"]))
+            user, state = _read_remote(gateway, user_id=int(data["v2_user_id"]))
             if state == "missing":
                 data["panel_applied"] = True
                 _write(db, op, data)
                 return "finish"
-            if state == "found" and not data.get("panel_sent"):
+            if state == "found" and not _possibly_sent(data):
                 return "reverse"
+            if state == "found" and _deferred_refund(data):
+                if not _subs().owns_panel_user(user, _panel_email(op, data)):
+                    return "attention"
+                if _panel_rejected(exc):
+                    return "attention" if data.get("refund_prior_send") else "reverse"
             return "unknown"
         return "unknown"
     except LostLease:
@@ -1076,14 +1115,16 @@ def _apply_cap_change(db: Session, op: PanelOperation, gateway):
     user_id = int(sub.v2_user_id)
     email = _panel_email(op, data, sub)
     db.commit()
+    deferred_decrease = op.kind == "decrease" and _deferred_refund(data)
     if not data.get("panel_applied"):
         plan = _call_panel(gateway, "get_plan", int(view.plan_id))
         current = _call_panel(gateway, "get_user_info", user_id)
         _ensure_owner(db, op, data, current, email)
-        landed = _change_maybe_sent(data) and _sent_change_landed(
-            db, op, current, target=(data["new_cap"], data["new_expired_at"])
-        )
-        if not landed:
+        target = (data["new_cap"], data["new_expired_at"])
+        already_sent = _change_maybe_sent(data)
+        if already_sent and not deferred_decrease:
+            _sent_change_landed(db, op, current, target=target)
+        if not already_sent:
             payload = subs.build_update(
                 sub,
                 view,
@@ -1094,9 +1135,19 @@ def _apply_cap_change(db: Session, op: PanelOperation, gateway):
                 current=current,
             )
             _send_marked(db, op, data, lambda: _call_panel(gateway, "update_user", payload))
+        if deferred_decrease:
+            confirmed, state = _read_remote(gateway, user_id=user_id)
+            if state != "found" or _same_quota(confirmed, *target) is None:
+                raise V2BoardError("نتیجه کاهش اشتراک روی پنل قابل تأیید نیست")
+            _ensure_owner(db, op, data, confirmed, email)
+            _sent_change_landed(db, op, confirmed, target=target)
         data["panel_applied"] = True
         _write(db, op, data)
-    _complete_owned(db, op, data)
+    if deferred_decrease:
+        _settle_refund(db, op, data)
+        _write(db, op, data, status="completed")
+    else:
+        _complete_owned(db, op, data)
     db.refresh(sub)
     if op.kind == "increase":
         return {"sub": sub, "charge": _load_charge(data)}
@@ -1105,6 +1156,7 @@ def _apply_cap_change(db: Session, op: PanelOperation, gateway):
 
 def _apply_delete(db: Session, op: PanelOperation, gateway):
     data = _loads(op)
+    deferred = _deferred_refund(data)
     db.commit()
     if not data.get("panel_applied"):
         user_id = int(data["v2_user_id"])
@@ -1115,9 +1167,15 @@ def _apply_delete(db: Session, op: PanelOperation, gateway):
         if state == "found":
             _ensure_owner(db, op, data, user, _panel_email(op, data))
             _send_marked(db, op, data, lambda: _call_panel(gateway, "delete_user", user_id))
+            if deferred:
+                _confirmed, state = _read_remote(gateway, user_id=user_id)
+                if state != "missing":
+                    raise V2BoardError("حذف کاربر روی پنل هنوز تأیید نشده است")
         data["panel_applied"] = True
         _write(db, op, data)
-    sub_id = op.subscription_id or data.get("subscription_id")
+    if deferred:
+        _settle_refund(db, op, data)
+    sub_id = op.subscription_id if deferred else op.subscription_id or data.get("subscription_id")
     sub = db.get(Subscription, int(sub_id)) if sub_id else None
     if sub is not None:
         for row in db.scalars(select(WalletLedger).where(WalletLedger.subscription_id == sub.id)):
@@ -1518,12 +1576,10 @@ def perform_decrease(
     old_cap = qgb(sub.traffic_cap_gb)
     old_exp = int(sub.expired_at)
     partner = subs.lock_partner_row(db, sub.partner_id)
-    credit = subs.lock_credit(db, partner.id, sub.product_id)
     authorization = consent.check(db, sub.product_id, sub, _refund_terms(gb_back, days_back, used))
     sub.traffic_cap_gb = new_cap
     sub.expired_at = new_exp
     sub.updated_at = utcnow()
-    subs._give_credit(db, credit, partner.id, sub.product_id, sub.id, gb_back, days_back, "decrease", actor)
     data = _base_payload(
         actor,
         sub.product,
@@ -1533,6 +1589,7 @@ def perform_decrease(
         new_cap=dec_str(new_cap),
         old_expired_at=old_exp,
         new_expired_at=int(new_exp),
+        refund_deferred=True,
         gb_back=dec_str(gb_back),
         days_back=int(days_back),
         used_gb=dec_str(used) if used is not None else None,
@@ -1596,15 +1653,14 @@ def perform_delete(
     left = subs.days_left(int(sub.expired_at), now_ts)
     gb_back, days_back = subs.refund_delete(sub.traffic_cap_gb, used, left)
     partner = subs.lock_partner_row(db, sub.partner_id)
-    credit = subs.lock_credit(db, partner.id, sub.product_id)
     authorization = consent.check(db, sub.product_id, sub, _refund_terms(gb_back, days_back, used))
-    subs._give_credit(db, credit, partner.id, sub.product_id, sub.id, gb_back, days_back, "delete_refund", actor)
     data = _base_payload(
         actor,
         sub.product,
         sub=sub,
         **authorization,
         v2_user_id=int(sub.v2_user_id),
+        refund_deferred=True,
         gb_back=dec_str(gb_back),
         days_back=int(days_back),
         used_gb=dec_str(used),
@@ -1740,7 +1796,11 @@ def _resend_pending(op: PanelOperation, data: dict) -> bool:
 
 def _retry_kind(op: PanelOperation, data: dict) -> str | None:
     """What `retry` does for this attention row, mirroring resolve_attention."""
-    if op.status != "attention" or data.get("foreign_target"):
+    if op.status != "attention":
+        return None
+    if op.kind in {"decrease", "delete"} and _deferred_refund(data):
+        return "resend_change"
+    if data.get("foreign_target"):
         return None
     shortfall = "shortfall_gb" in data or "shortfall_days" in data
     if op.kind == "reset_traffic" and not data.get("panel_applied"):
@@ -1776,6 +1836,9 @@ def operation_view(op: PanelOperation) -> dict:
     # Explicit allow-list: payloads also hold subscribe links and panel identifiers.
     data = _loads(op)
     charge = data.get("charge") if isinstance(data.get("charge"), dict) else {}
+    refund_state = None
+    if _deferred_refund(data):
+        refund_state = {"completed": "credited", "failed": "voided", "closed": "voided"}.get(op.status, "reserved")
     return {
         "id": op.id,
         "status": op.status,
@@ -1793,6 +1856,7 @@ def operation_view(op: PanelOperation) -> dict:
         "charge_days_from_credit": charge.get("days_from_credit"),
         "gb_back": data.get("gb_back"),
         "days_back": data.get("days_back"),
+        "refund_state": refund_state,
         "old_cap_gb": data.get("old_cap"),
         "new_cap_gb": data.get("new_cap") or data.get("cap_gb"),
         "panel_applied": bool(data.get("panel_applied")),
@@ -1858,6 +1922,8 @@ def operation_panel_state(db: Session, op_id: int, gateway_factory) -> dict:
         "available": True,
         "exists": True,
         "owned": True,
+        **({"refund_target_applied": _same_quota(user, data["new_cap"], data["new_expired_at"])}
+           if op.kind == "decrease" and _deferred_refund(data) else {}),
         "transfer_enable_gb": dec_str(D(int(info.get("transfer_enable") or 0)) / D(1073741824)),
         "used_gb": dec_str(D(used) / D(1073741824)),
         "expired_jalali": format_jalali_ts(int(expired_at)) if expired_at is not None else None,
@@ -1885,7 +1951,9 @@ def operation_decision_blocks(op: PanelOperation, panel: dict) -> dict[str, str]
     action = _retry_kind(op, data)
     where = _panel_category(panel)
     blocks: dict[str, str] = {}
-    if action in {"resend_reset", "resend_change"}:
+    deferred = _deferred_refund(data)
+    confirmed = deferred and bool(data.get("panel_applied"))
+    if action in {"resend_reset", "resend_change"} and not confirmed:
         generate = op.kind == "create" and not data.get("v2_user_id")
         allowed = {"no_user"} if generate else ({"ours", "missing"} if op.kind == "delete" else {"ours"})
         if where not in allowed:
@@ -1893,7 +1961,17 @@ def operation_decision_blocks(op: PanelOperation, panel: dict) -> dict[str, str]
                 "missing": "کاربر این عملیات روی پنل وجود ندارد؛ ارسال دوباره به پنل ممکن نیست.",
                 "foreign": "کاربر این شناسه روی پنل متعلق به این اشتراک نیست؛ ارسال دوباره ممکن نیست.",
             }.get(where, PANEL_UNREADABLE)
-    if op.kind == "delete" and action == "resend_change" and where != "foreign":
+    if deferred:
+        if confirmed or (op.kind == "delete" and where == "missing") or (
+            op.kind == "decrease" and panel.get("refund_target_applied") is True
+        ):
+            blocks["close"] = "نتیجه روی پنل تأیید شده است؛ برای ثبت اعتبار رزروشده «تلاش دوباره» را انتخاب کنید."
+        elif where not in {"foreign", "missing"} and (where != "ours" or _possibly_sent(data)):
+            blocks["close"] = (
+                "نتیجهٔ درخواست قبلی قطعی نیست؛ برای بررسی نتیجه و جلوگیری از اختلاف مالی «تلاش دوباره» را انتخاب کنید."
+                if where == "ours" else PANEL_UNREADABLE
+            )
+    elif op.kind == "delete" and action == "resend_change" and where != "foreign":
         # The refund for a delete was paid up front; closing would keep it next to a live local row.
         blocks["close"] = {
             "missing": "کاربر روی پنل حذف شده و مبلغ حذف برگشت خورده است؛ «تلاش دوباره» حذف را بدون "
@@ -1926,6 +2004,9 @@ def resolve_attention(
         raise AppError(STALE_DECISION, 409)
     if not (note or "").strip():
         raise AppError("نوشتن توضیح برای تصمیم ادمین الزامی است")
+    panel: dict = {}
+    if _deferred_refund(_loads(op)) and gateway_factory is None:
+        raise AppError(PANEL_UNREADABLE, 409)
     if gateway_factory is not None:
         # Re-read the panel now: the admin's view may predate a deletion or a change of owner.
         try:
@@ -1958,14 +2039,20 @@ def resolve_attention(
             data["resolution_note"] = cleaned[:500]
         data["resolved_by"] = int(actor.id)
         if decision == "close":
+            if op.kind == "decrease" and _deferred_refund(data):
+                _subs().lock_partner_row(db, op.partner_id, allow_banned=True)
+                _revert_cap(db, op, data)
             data["resolution"] = "close"
             data["accepted_shortfall_gb"] = dec_str(gap_gb)
             data["accepted_shortfall_days"] = gap_days
             _mark(db, op, data, "closed", AppError(cleaned or "توسط ادمین با دیدن اختلاف بسته شد"))
             return operation_view(_reload(db, op_id))
         if data.get("foreign_target"):
-            _save_owned(db, op.id, {}, release=True)
-            raise AppError("کاربر این شناسه در پنل متعلق به این اشتراک نیست؛ ارسال دوباره ممکن نیست و فقط بستن مجاز است.")
+            if not _deferred_refund(data):
+                _save_owned(db, op.id, {}, release=True)
+                raise AppError("کاربر این شناسه در پنل متعلق به این اشتراک نیست؛ ارسال دوباره ممکن نیست و فقط بستن مجاز است.")
+            # The fresh panel decision has established safe recovery (owned, deleted, or already confirmed).
+            data.pop("foreign_target")
         if op.kind == "reset_traffic" and not data.get("panel_applied"):
             # The admin checked the panel and saw no reset; the kept charge pays for the resend.
             data["reset_sent"] = False
@@ -1975,8 +2062,13 @@ def resolve_attention(
             _mark(db, op, data, "pending", AppError(cleaned or "ادمین ارسال دوباره ریست را تایید کرد"))
             return operation_view(_reload(db, op_id))
         if _retry_kind(op, data) == "resend_change":
-            # The admin checked the panel and saw the earlier request did not land; send it once more.
-            data["panel_sent"] = False
+            # An old snapshot permits an authorized retry, but cannot rule out the first send.
+            deferred = _deferred_refund(data)
+            target_observed = deferred and panel.get("refund_target_applied") is True
+            if not target_observed:
+                if deferred and data.get("panel_sent"):
+                    data["refund_prior_send"] = True
+                data["panel_sent"] = False
             data["auto_resends"] = 0
             data["resolution"] = "retry"
             _mark(db, op, data, "pending", AppError(cleaned or "ادمین ارسال دوباره به پنل را تایید کرد"))

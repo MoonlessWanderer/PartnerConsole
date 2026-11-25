@@ -45,7 +45,7 @@ async function review(page, scope, label) {
     page.locator("dt").filter({ hasText: /^برداشت از کیف پول$/ }).locator("xpath=../dd"),
   );
   await amount.waitFor();
-  const shown = (await amount.innerText()).trim().replace(/^مبلغ:\s*/u, "").replace(/[,٬]/gu, "");
+  const shown = (await amount.innerText()).trim().replace(/^مبلغ:\s*/u, "").replace(/[,٬]/gu, "").replace(/\s+/gu, " ");
   const expected = new Intl.NumberFormat("fa-IR", { useGrouping: false }).format(quote.toman);
   assert.equal(shown, expected + " تومان", "visible amount differs from the quote");
   return quote;
@@ -179,10 +179,12 @@ async function verify() {
     assert.ok(assets.has("script") && assets.has("stylesheet"), "production JavaScript or CSS missing");
 
     await reset.reload();
+    await button(reset.getByRole("navigation", { name: "بخش‌های اشتراک" }), "مدیریت").click();
     const newReset = await review(reset, reset, "ریست ترافیک");
     assert.ok(newReset.consent_token);
     assert.equal(newReset.toman, 1100);
-    assert.equal((await submitReset()).status(), 200);
+    const newResetResponse = await post(reset, resetRoute, () => button(reset, "تأیید ریست ترافیک").click());
+    assert.equal(newResetResponse.status(), 200);
     const settled = await snapshot();
     assert.equal(purchased.wallet - settled.wallet, newReset.toman);
     assert.equal(settled.ledger.length, purchased.ledger.length + 1);

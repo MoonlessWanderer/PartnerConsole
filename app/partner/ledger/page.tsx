@@ -2,6 +2,8 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import { PageHead } from "@/components/Design";
+import { IconTile } from "@/components/Icons";
 import { Banner } from "@/components/ui";
 import { api } from "@/lib/api";
 import { ASSET_LABEL, REASON_LABEL, formatAmount, formatDate } from "@/lib/format";
@@ -64,12 +66,13 @@ export default function PartnerLedger() {
     return () => { current = false; };
   }, []);
 
-  if (error) return <Banner>{error}</Banner>;
-  if (!rows) return <p className={styles.empty} role="status">در حال بارگیری تاریخچه…</p>;
-  if (!rows.length) return <p className={styles.empty}>رکوردی نیست.</p>;
+  const heading=<PageHead title="تاریخچه تراکنش‌ها" description="سوابق تغییرات تومان، اعتبار حجم و اعتبار روز"/>;
+  if (error) return <>{heading}<Banner>{error}</Banner></>;
+  if (!rows) return <>{heading}<p className={styles.empty} role="status">در حال بارگیری تاریخچه…</p></>;
+  if (!rows.length) return <>{heading}<p className={styles.empty}>رکوردی نیست.</p></>;
 
   return (
-    <section className={styles.panel} aria-label="تراکنش‌های همکار">
+    <>{heading}<section className={styles.panel} aria-label="تراکنش‌های همکار">
       <table className={styles.table} aria-label="تراکنش‌ها">
         <thead><tr><th scope="col">دلیل</th><th scope="col">تغییر</th><th scope="col">محصول</th>
           <th scope="col">اشتراک</th><th scope="col">عامل</th><th scope="col">زمان</th></tr></thead>
@@ -87,12 +90,18 @@ export default function PartnerLedger() {
       <ul className={styles.list} aria-label="تراکنش‌ها">
         {rows.map((row) => (
           <li key={row.id} data-ledger-id={row.id}>
-            <div className={styles.line}><strong><Reason row={row} /></strong><Change row={row} /></div>
-            <div className={styles.line}><span>{row.product_name || "—"}</span><DateValue row={row} /></div>
-            <div className={styles.line}><span><Subscription row={row} /></span><span><Actor row={row} /></span></div>
+            <div className={styles.line}><strong className="flex items-center gap-2"><IconTile name="receipt"/><Reason row={row} /></strong><Change row={row} /></div>
+            <div className={styles.line}>
+              <span className={styles.rowMeta}>
+                {row.product_name && <span>{row.product_name}</span>}
+                {row.subscription_id !== null && row.subscription_username && <Subscription row={row} />}
+                <Actor row={row} />
+              </span>
+              <DateValue row={row} />
+            </div>
           </li>
         ))}
       </ul>
-    </section>
+    </section></>
   );
 }

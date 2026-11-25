@@ -1,25 +1,15 @@
 "use client";
 
 import type { ReactNode } from "react";
-import { AppShell } from "@/components/Shell";
+import { AppShell, type NavItem } from "@/components/Shell";
 
-const subscriptionsPath = "/partner/subscriptions";
-
-const items = [
-  { href: "/partner", label: "داشبورد", icon: "◫" },
-  { href: subscriptionsPath, label: "اشتراک‌ها", icon: "▤" },
-  { href: "/partner/ledger", label: "تاریخچه", icon: "◷" },
+const items: NavItem[] = [
+  { href: "/partner", label: "داشبورد", icon: "home" },
+  { href: "/partner/subscriptions", label: "اشتراک‌ها", icon: "layers" },
+  { href: "/partner/products", label: "محصولات", icon: "product" },
+  { href: "/partner/ledger", label: "حساب مالی", icon: "wallet" },
 ];
 
-function resolveTitle(pathname: string) {
-  if (pathname === `${subscriptionsPath}/new`) return "ساخت اشتراک";
-  if (pathname.startsWith(`${subscriptionsPath}/`)) return "جزئیات اشتراک";
-}
-
 export default function PartnerLayout({ children }: { children: ReactNode }) {
-  return (
-    <AppShell role="partner" items={items} loginPath="/" resolveTitle={resolveTitle}>
-      {children}
-    </AppShell>
-  );
+  return <AppShell role="partner" items={items} loginPath="/">{children}</AppShell>;
 }

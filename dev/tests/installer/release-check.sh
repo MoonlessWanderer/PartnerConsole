@@ -405,10 +405,19 @@ ok "web health rejects an error page"
 backup_root="$work/backup-root"
 mkdir -p "$backup_root/config" "$backup_root/data" "$backup_root/logs" "$backup_root/backups" "$backup_root/runtime/tmp" "$backup_root/runtime/cache/pip" "$backup_root/runtime/cache/npm" "$backup_root/runtime/cache/xdg" "$backup_root/runtime/cache/pyc" "$backup_root/runtime/pids"
 printf 'SECRET_KEY=not-a-real-secret\n' > "$backup_root/config/api.env"
-chmod 777 "$backup_root/config" "$backup_root/config/api.env" "$backup_root/data"
+chmod 750 "$backup_root/config"
+chmod 640 "$backup_root/config/api.env"
+chmod 700 "$backup_root/data"
+if [[ "$EUID" -eq 0 ]]; then
+  chmod 777 "$backup_root/config"
+  if (PP_ROOT="$backup_root"; pp_prepare_runtime) > "$work/unsafe-config.log" 2>&1; then
+    fail "root maintenance accepted a writable configuration directory"
+  fi
+  grep -Fq 'Refusing an unsafe root maintenance directory:' "$work/unsafe-config.log" || fail "unsafe configuration refusal"
+  chmod 750 "$backup_root/config"
+fi
 (
   PP_ROOT="$backup_root"
-  id() { [[ "${1:-}" == "-u" ]] && printf '0\n'; }
   pp_prepare_runtime
   mkdir -p "$work/config-probe" "$work/data-probe"
   printf 'x\n' > "$work/env-probe"

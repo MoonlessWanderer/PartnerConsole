@@ -1119,6 +1119,7 @@ def test_http_delete_returns_unused_volume_and_remaining_days_to_subscription_pr
             pending_id, kind, status, product, linked_sub, audit = pending["operations"][-1]
             assert error["code"] == "operation_status" and f"عملیات شماره {pending_id} ذخیره شد" in error["detail"]
             assert (kind, status, product, linked_sub) == ("delete", "pending", b_id, sub_id)
+            assert audit["refund_deferred"] is True
             assert audit["panel_sent"] is True and audit["panel_applied"] is False
             assert (audit["subscription_id"], audit["v2_user_id"]) == (sub_id, user_id)
             assert (Decimal(audit["used_gb"]), Decimal(audit["gb_back"]), audit["days_back"]) == (
@@ -1126,17 +1127,13 @@ def test_http_delete_returns_unused_volume_and_remaining_days_to_subscription_pr
             )
             assert pending["subscriptions"] == before["subscriptions"] and pending["upstream"] == []
             assert pending["wallet"] == before["wallet"]
-            assert pending["credits"] == {a_id: before["credits"][a_id], b_id: (4 + expected_gb, 6 + expected_days)}
-            assert pending["ledger"][:-2] == before["ledger"]
-            assert sorted(row[1:] for row in pending["ledger"][-2:]) == [
-                ("days", expected_days, b_id, sub_id, "delete_refund"),
-                ("gb", expected_gb, b_id, sub_id, "delete_refund"),
-            ]
+            assert pending["credits"] == before["credits"]
+            assert pending["ledger"] == before["ledger"]
             drop_evidence = {"delete_ids": [user_id], "dropped_id": user_id, "lookups": []}
             assert payload(panel.get("/_lab/delete-evidence")) == drop_evidence
             print(f"After dropped reply: HTTP {response.status_code} {error['code']}, "
                   f"local subscription={sub_id}, empty panel, operation={pending_id}/{status}, "
-                  f"B={pending['credits'][b_id]}, refund={expected_gb} GB/{expected_days} days")
+                  f"B={pending['credits'][b_id]}, reserved={expected_gb} GB/{expected_days} days")
         else:
             result = payload(response)
             assert (Decimal(result["gb_refund"]), result["days_refund"]) == (expected_gb, expected_days)
@@ -1160,7 +1157,7 @@ def test_http_delete_returns_unused_volume_and_remaining_days_to_subscription_pr
                 print(f"Invalid lookup ({lookup_fault}): responses={[row['status'] for row in failed_lookups]}, "
                       f"operation={pending_id}/{blocked['operations'][-1][2]}, "
                       f"local subscription={sub_id}, panel user absent, "
-                      f"B={blocked['credits'][b_id]}, refund still {expected_gb} GB/{expected_days} days")
+                      f"B={blocked['credits'][b_id]}, held refund={expected_gb} GB/{expected_days} days")
             payload(panel.delete("/_lab/delete-lookup-fault"))
 
         # Run the normal startup reconciler on the same temporary DB. No repeat confirmation.
@@ -1172,7 +1169,7 @@ def test_http_delete_returns_unused_volume_and_remaining_days_to_subscription_pr
             assert proof == {
                 **drop_evidence, "lookups": [*failed_lookups, {"user_id": user_id, "status": 200, "ids": []}],
             }
-            assert [row[0] for row in after["ledger"]] == [row[0] for row in pending["ledger"]]
+            assert [row[0] for row in after["ledger"][:-2]] == [row[0] for row in pending["ledger"]]
             assert after["operations"][-1][0] == pending_id
             print(f"Startup recovery evidence: {proof}")
 
@@ -1191,6 +1188,7 @@ def test_http_delete_returns_unused_volume_and_remaining_days_to_subscription_pr
     (op_id, kind, status, op_product, op_fk, audit) = after["operations"][-1]
     assert (kind, status, op_product, op_fk) == ("delete", "completed", b_id, None)
     assert (audit["subscription_id"], audit["v2_user_id"]) == (sub_id, user_id)
+    assert audit["refund_deferred"] is True
     assert audit["panel_applied"] is True and audit["panel_sent"] is True
     print(f"purchase={purchase_time.isoformat()}, delete={deletion_time.isoformat()}, expiry={end_jalali}; "
           f"duration={purchased_days} days, full days left={expected_days}; "

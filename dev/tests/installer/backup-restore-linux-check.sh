@@ -79,6 +79,8 @@ purchase_count() {
     WHERE s.username='fixture_after_update' AND l.reason='create' AND l.asset='toman' AND l.amount=-5300"
 }
 [[ "$(purchase_count)" == 1 ]] || fail 'browser purchase ledger before Backup'
+root_sql "UPDATE partnerconsole.subscriptions SET note = 'Training checklist: CREATE DATABASE is a SQL term.'
+  WHERE username = 'fixture_after_update'"
 db_state > "$work/state-backup"
 grep -Fxq '0005_security_state' "$work/state-backup" || fail 'unexpected migration version before backup'
 /usr/local/bin/partnerconsole backup > "$work/backup.log" 2>&1 || fail "official Backup: $(tail -n 5 "$work/backup.log")"
@@ -130,6 +132,8 @@ newest="$(find "$app/backups" -maxdepth 1 -name 'partnerconsole-20[1-9]*.sql' -p
 [[ "$(find "$app/backups" -maxdepth 1 -name 'partnerconsole-20[1-9]*.sql' | wc -l)" -gt "$protective_before" ]] || fail 'Restore took no protective backup'
 grep -Fq "'restore-mutation'" "$app/backups/$newest" || fail 'the protective backup does not hold the data from before Restore'
 [[ "$(purchase_count)" == 1 ]] || fail 'browser purchase ledger after Restore'
+[[ "$(root_sql "SELECT note FROM partnerconsole.subscriptions WHERE username = 'fixture_after_update'")" == \
+  'Training checklist: CREATE DATABASE is a SQL term.' ]] || fail 'quoted note did not survive restore'
 ok 'official Full Restore returned every table to the backup, including the browser purchase and its ledger; the protective backup was retained'
 
 sudo partnerconsole start || fail 'start after Restore'

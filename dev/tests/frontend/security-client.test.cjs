@@ -10,11 +10,11 @@ function fixture(fetch, timers = { setTimeout, clearTimeout }) {
   const localStorage = { getItem: (key) => storage.get(key) ?? null,
     setItem: (key, value) => storage.set(key, value), removeItem: (key) => storage.delete(key) };
   const redirects = [];
-  const states = [false, true, "shop1", true, "", false];
+  const states = ["synthetic-token", "shop1", "", false, false];
   let index = 0;
   const runtime = { jsx: (type, props) => ({ type, props }), jsxs: (type, props) => ({ type, props }) };
   const modules = {};
-  const context = { process: { env: {} }, window: { location: {} }, localStorage, fetch, AbortController, ...timers,
+  const context = { process: { env: {} }, window: { location: { search: "" } }, URLSearchParams, localStorage, fetch, AbortController, ...timers,
     sessionStorage: { getItem: () => "/gate/k3p8n2" }, exports: {}, require: (name) => modules[name] };
   function compile(file) {
     context.exports = {};
@@ -38,7 +38,8 @@ function fixture(fetch, timers = { setTimeout, clearTimeout }) {
     if (states[slot] === undefined) states[slot] = initial;
     return [states[slot], (value) => { states[slot] = typeof value === "function" ? value(states[slot]) : value; }];
   } };
-  modules["@/components/ui"] = { Banner: "Banner" };
+  modules["@/components/ui"] = { Banner: "Banner", Button: "Button" };
+  modules["@/components/Icons"] = { BrandMark: "BrandMark", Icon: "Icon" };
   const { AppShell } = compile("components/Shell.tsx");
   function render() {
     index = 0;
@@ -50,7 +51,7 @@ function fixture(fetch, timers = { setTimeout, clearTimeout }) {
     return [...(predicate(tree) ? [tree] : []), ...nodes(tree.props?.children, predicate)];
   }
   function logoutButton() {
-    return nodes(render(), (node) => node.type === "button" && ["خروج", "در حال خروج…"].includes(node.props.children))[0];
+    return nodes(render(), (node) => node.type === "Button" && Array.isArray(node.props.children) && node.props.children.some(child => ["خروج", "در حال خروج…"].includes(child)))[0];
   }
   return { api, storage, redirects, render, logoutButton, nodes, states, context, compile, modules,
     resetRender: () => { index = 0; } };
@@ -159,17 +160,35 @@ test("deadline includes response body and makes logout retryable without clearin
   assert.equal(f.storage.has("pp_token"), false);
 });
 
-test("admin balance lookup reports a network failure in the page banner", async () => {
-  const f = fixture(async () => { throw Error("synthetic-raw-network-error"); });
-  f.states.splice(0, f.states.length, [{ id: 1, username: "shop", balance_toman: 0, banned: false }]);
-  f.modules["@/lib/format"] = { formatToman: String };
-  Object.assign(f.modules["@/components/ui"], { Button: "Button", Field: "Field", TableWrap: "TableWrap" });
+function mountPartnerPage(f, pathname) {
+  const pendingEffects = [];
+  f.modules["next/navigation"] = { usePathname: () => pathname, useParams: () => ({ id: pathname.split("/")[3] }),
+    useRouter: () => ({ push() {} }) };
+  f.modules["@/lib/format"] = { formatToman: String, formatAmount: (_asset, value) => String(value) };
+  f.modules["@/components/Design"] = Object.fromEntries(
+    ["ActionLink", "Facts", "NavRow", "PageHead", "ResponsiveTable", "Wallet"].map(name => [name, name]));
+  Object.assign(f.modules["@/components/ui"], { Field: "Field", Badge: "Badge" });
   f.modules["@/components/Modal"] = { Modal: "Modal" };
+  f.modules["react"].useEffect = effect => pendingEffects.push(effect);
   const PartnersPage = f.compile("app/admin/partners/page.tsx").default;
-  const render = () => { f.resetRender(); return PartnersPage(); };
-  const [balance] = f.nodes(render(), (n) => n.type === "Button" && n.props.children === "موجودی");
-  await balance.props.onClick();
-  const [banner] = f.nodes(render(), (n) => n.type === "Banner");
+  return {
+    render() { f.resetRender(); return PartnersPage(); },
+    async load() {
+      pendingEffects.splice(0).forEach(effect => effect());
+      await new Promise(resolve => setImmediate(resolve));
+    },
+  };
+}
+
+test("admin balance lookup reports a network failure in the page banner", async () => {
+  let endpoint;
+  const f = fixture(async (url) => { endpoint = url; throw Error("synthetic-raw-network-error"); });
+  f.states.splice(0);
+  const page = mountPartnerPage(f, "/admin/partners/1/wallet");
+  page.render();
+  await page.load();
+  assert.ok(endpoint.endsWith("/api/admin/partners/1"));
+  const [banner] = f.nodes(page.render(), (n) => n.type === "Banner");
   assert.match(banner.props.children, /ارتباط با سرور/);
   assert.doesNotMatch(banner.props.children, /synthetic-raw-network-error/);
 });
@@ -177,32 +196,35 @@ test("admin balance lookup reports a network failure in the page banner", async 
 test("wallet adjustment submits once and retains the partner identity from a partial API response", async () => {
   let requests = 0;
   let finish;
-  const f = fixture(async (url) => {
+  const f = fixture(async (url, options) => {
     if (url.endsWith("/adjust")) {
       requests++;
+      assert.deepEqual(JSON.parse(options.body), { asset: "toman", amount: "4", product_id: null });
       return new Promise((resolve) => { finish = resolve; });
     }
-    return { ok: true, json: async () => ({ items: [] }) };
+    return { ok: true, json: async () => ({ id: 7, username: "shop7", balance_toman: 10, banned: true, credits: [] }) };
   });
-  f.states.splice(0, f.states.length, [], "", false, "", "",
-    { id: 7, username: "shop7", balance_toman: 10, banned: true, credits: [] }, "toman", "4", 0);
-  f.modules["@/lib/format"] = { formatToman: String };
-  Object.assign(f.modules["@/components/ui"], { Button: "Button", Field: "Field", TableWrap: "TableWrap" });
-  f.modules["@/components/Modal"] = { Modal: "Modal" };
-  const PartnersPage = f.compile("app/admin/partners/page.tsx").default;
-  const render = () => { f.resetRender(); return PartnersPage(); };
-  const [form] = f.nodes(render(), (n) => n.type === "form");
-  const event = { preventDefault() {} };
-  const first = form.props.onSubmit(event);
-  await form.props.onSubmit(event);
+  f.states.splice(0);
+  const page = mountPartnerPage(f, "/admin/partners/7/wallet");
+  page.render();
+  await page.load();
+  const [amount] = f.nodes(page.render(), (n) => n.type === "input" && n.props.required);
+  amount.props.onChange({ target: { value: "4" } });
+  const [form] = f.nodes(page.render(), (n) => n.type === "form");
+  form.props.onSubmit({ preventDefault() {} });
+  assert.equal(requests, 0, "opening the review must not change the wallet");
+  const [confirm] = f.nodes(page.render(), (n) => n.type === "Button" && n.props.children === "تأیید و اعمال تعدیل");
+  const first = confirm.props.onClick();
+  await confirm.props.onClick();
   assert.equal(requests, 1);
-  const [pending] = f.nodes(render(), (n) => n.type === "Button" && n.props.type === "submit");
+  const [pending] = f.nodes(page.render(), (n) => n.type === "Button" && n.props.children === "در حال ثبت…");
   assert.equal(pending.props.disabled, true);
   finish({ ok: true, json: async () => ({ id: 7, balance_toman: 14, credits: [] }) });
   await first;
-  assert.equal(f.states[5].username, "shop7");
-  assert.equal(f.states[5].banned, true);
-  assert.equal(f.states[5].balance_toman, 14);
+  const result = f.states.find(state => state && state.id === 7);
+  assert.equal(result.username, "shop7");
+  assert.equal(result.banned, true);
+  assert.equal(result.balance_toman, 14);
 });
 
 test("modal names its dialog and places the error inside the active dialog", () => {

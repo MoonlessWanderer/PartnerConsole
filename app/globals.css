@@ -1,3 +1,5 @@
+@import "./quiet-luxury.css";
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -73,39 +75,4 @@
   font-style: normal;
   font-display: swap;
   unicode-range: U+0100-024F, U+1E00-1EFF;
-}
-
-html {
-  direction: rtl;
-}
-
-body {
-  margin: 0;
-  font-family: Vazirmatn, Tahoma, sans-serif;
-  background: #f1f5f9;
-}
-
-* {
-  box-sizing: border-box;
-}
-
-table {
-  width: 100%;
-  border-collapse: collapse;
-  min-width: 640px;
-}
-
-th,
-td {
-  padding: 0.75rem;
-  text-align: right;
-  white-space: nowrap;
-  border-bottom: 1px solid #e2e8f0;
-  font-size: 0.875rem;
-}
-
-th {
-  background: #f8fafc;
-  font-weight: 500;
-  color: #475569;
 }

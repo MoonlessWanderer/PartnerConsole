@@ -1,6 +1,8 @@
 "use client";
 
-import Link from "next/link";
+import { DraftLeaveWarning } from "@/components/DraftLeaveWarning";
+
+import { PageHead, Facts, WalletDebit } from "@/components/Design";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { JalaliDateField } from "@/components/JalaliDateField";
@@ -16,14 +18,17 @@ type PurchaseQuote = Quote & { gb_cost_toman: number; days_cost_toman: number };
 
 const usernamePattern = "[A-Za-z0-9_]{3,32}";
 const validUsername = new RegExp(`^${usernamePattern}$`);
+const initialTrafficGb = "10";
 
 export default function NewSubscriptionPage() {
   const router = useRouter();
   const [reviewSession] = useState(sessionToken);
   const [today] = useState(todayJalali);
   const [products, setProducts] = useState<Product[] | null>(null);
-  const [draft, setDraft] = useState({ product_id: 0, username: "", traffic_cap_gb: "10", end_date: "", note: "" });
+  const [draft, setDraft] = useState({ product_id: 0, username: "", traffic_cap_gb: initialTrafficGb, end_date: "", note: "" });
   const [calendarOpen, setCalendarOpen] = useState(false);
+  const [reviewOpen, setReviewOpen] = useState(false);
+  const heading = useRef<HTMLHeadingElement>(null);
   const [quoteVersion, setQuoteVersion] = useState(0);
   const [error, setError] = useState("");
   const [reprice, setReprice] = useState("");
@@ -41,6 +46,11 @@ export default function NewSubscriptionPage() {
   const canQuote = !!product && validUsername.test(draft.username) && Number.isInteger(volume) &&
     volume >= 1 && volume <= 1_000_000 && !!parseJalali(draft.end_date) && draft.end_date > today;
   const inputsLocked = pending || Boolean(followUp);
+  const dirty = Boolean(draft.username || draft.note || draft.end_date) ||
+    draft.traffic_cap_gb !== initialTrafficGb || draft.product_id !== (products?.[0]?.id ?? 0);
+  useEffect(() => {
+    if (reviewOpen) heading.current?.focus();
+  }, [reviewOpen]);
 
   useEffect(() => {
     let current = true;
@@ -93,7 +103,7 @@ export default function NewSubscriptionPage() {
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (submitting.current || !quote?.affordable || !quote.consent_token || sessionToken() !== reviewSession) return;
+    if ((!reviewOpen && window.matchMedia("(max-width: 680px)").matches) || submitting.current || !quote?.affordable || !quote.consent_token || sessionToken() !== reviewSession) return;
     submitting.current = true;
     setPending(true);
     setError("");
@@ -123,11 +133,10 @@ export default function NewSubscriptionPage() {
 
   return (
     <div className={styles.page}>
-      <Link href="/partner/subscriptions" prefetch={false} className={styles.back} aria-label="بازگشت به اشتراک‌ها">
-        <span dir="ltr" aria-hidden="true">→</span> اشتراک‌ها
-      </Link>
-      <form className={styles.layout} onSubmit={submit}>
-        <section className={styles.card} aria-labelledby="purchase-fields">
+      <DraftLeaveWarning dirty={!inputsLocked && dirty}/>
+      <PageHead title={reviewOpen ? "بررسی پیش‌فاکتور" : "ساخت اشتراک"} back={{href:"/partner/subscriptions",label:"اشتراک‌ها"}} />
+      <form className={styles.layout} data-review={reviewOpen} onSubmit={submit}>
+        <section className={styles.card+" pc-purchase-fields"} aria-labelledby="purchase-fields" hidden={reviewOpen}>
           <h2 id="purchase-fields">مشخصات اشتراک</h2>
           {products === null && !error && <p className={styles.empty} role="status">در حال بارگیری محصولات…</p>}
           {products?.length === 0 && <p className={styles.empty}>محصول فعالی برای ساخت اشتراک وجود ندارد.</p>}
@@ -191,11 +200,16 @@ export default function NewSubscriptionPage() {
                 value={draft.note} onChange={(event) => change("note", event.target.value)} />
             </details>
           </fieldset>
+          <div className="pc-mobile-review">
+            {!reviewOpen && (error || quoteError) && <div className="mb-2"><Banner>{error||quoteError}</Banner></div>}
+            <button type="button" className={styles.submit} disabled={!quote && !quoteError && !error}
+              onClick={()=>setReviewOpen(true)}>مشاهده پیش‌فاکتور</button>
+          </div>
         </section>
 
-        <section className={`${styles.card} ${styles.quote}`} aria-labelledby="purchase-quote">
+        <section className={`${styles.card} ${styles.quote}`} aria-labelledby="purchase-quote" data-review-open={reviewOpen}>
           <div className={styles.quoteHeading}>
-            <h2 id="purchase-quote">پیش‌فاکتور</h2>
+            <h2 id="purchase-quote" ref={heading} tabIndex={-1}>پیش‌فاکتور</h2>
             {quote && <p>{formatGb(quote.need_gb)} · {formatDays(quote.need_days)}</p>}
           </div>
           <div className={styles.messages} aria-live="polite">
@@ -210,10 +224,13 @@ export default function NewSubscriptionPage() {
                 <div><dt>نام کاربری</dt><dd><bdi dir="ltr">{request.draft.username.toLowerCase()}</bdi></dd></div>
                 <div><dt>محصول</dt><dd>{quote.product_name}</dd></div>
               </dl>
-              <dl className={styles.credit} aria-label="از اعتبار محصول">
-                <div><dt>اعتبار حجم مصرفی</dt><dd>{formatGb(quote.gb_from_credit)}</dd></div>
-                <div><dt>اعتبار روز مصرفی</dt><dd>{formatDays(quote.days_from_credit)}</dd></div>
-              </dl>
+              <section className={styles.credit} aria-labelledby="purchase-credit-title">
+                <h3 id="purchase-credit-title">از اعتبار محصول</h3>
+                <dl>
+                  <div><dt>اعتبار حجم مصرفی</dt><dd>{formatGb(quote.gb_from_credit)}</dd></div>
+                  <div><dt>اعتبار روز مصرفی</dt><dd>{formatDays(quote.days_from_credit)}</dd></div>
+                </dl>
+              </section>
               <PurchaseWalletBreakdown
                 gb={quote.gb_paid} days={quote.days_paid}
                 gbRate={quote.price_per_gb} dayRate={quote.price_per_day}
@@ -223,9 +240,7 @@ export default function NewSubscriptionPage() {
                 {quote.message && <span>{quote.message}</span>}
                 {quote.shortage_toman > 0 && <>کسری موجودی <strong>{formatToman(quote.shortage_toman)}</strong></>}
               </p>}
-              <dl className={styles.total}>
-                <div><dt>برداشت از کیف پول</dt><dd>{formatToman(quote.toman)}</dd></div>
-              </dl>
+              <WalletDebit amount={quote.toman} />
             </>
           ) : !quoteError && (
             <p className={styles.empty} role="status">
@@ -235,7 +250,17 @@ export default function NewSubscriptionPage() {
           <button className={styles.submit} type="submit" disabled={pending || !quote?.affordable || !quote.consent_token}>
             {pending ? "در حال بررسی…" : followUp ? "پیگیری همان عملیات" : "ثبت اشتراک"}
           </button>
+          {reviewOpen ? <button className="pc-button pc-button-outline mt-2" type="button" disabled={inputsLocked}
+            onClick={()=>setReviewOpen(false)}>بازگشت به مشخصات</button> :
+            <button className="pc-button pc-button-outline pc-desktop-review mt-2" type="button" disabled={!quote}
+              onClick={()=>setReviewOpen(true)}>بررسی پیش‌فاکتور</button>}
         </section>
+        {reviewOpen&&<aside className="pc-card">
+          <h2 className="pc-section-title">خلاصه درخواست</h2>
+          <Facts rows={[["حجم درخواستی",formatGb(quote?.need_gb)],["مدت درخواستی",quote?formatDays(quote.need_days):"—"],
+            ["تاریخ پایان",<bdi dir="ltr">{formatDate(request.draft.end_date)}</bdi>],
+            ["موجودی کیف پول",quote?formatToman(quote.balance_toman):"—"]]}/>
+        </aside>}
       </form>
     </div>
   );

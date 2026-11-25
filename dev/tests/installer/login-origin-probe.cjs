@@ -35,7 +35,7 @@ const capture = `(() => {
 
 const submit = `(() => {
   const inputs = [...document.querySelectorAll("input")];
-  const button = document.querySelector("form button, button[type=submit]");
+  const button = [...document.querySelectorAll("form button")].find(control => control.type === "submit");
   if (inputs.length < 2 || !button) return "form-missing";
   const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
   for (const [input, value] of [[inputs[0], "fixture-user"], [inputs[1], "fixture-password-123"]]) {
@@ -47,7 +47,7 @@ const submit = `(() => {
 })()`;
 
 const hydrated = `(() => {
-  const button = document.querySelector("form button, button[type=submit]");
+  const button = [...document.querySelectorAll("form button")].find(control => control.type === "submit");
   return !!button && Object.keys(button).some((key) => key.startsWith("__react"));
 })()`;
 

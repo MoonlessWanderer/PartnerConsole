@@ -3,32 +3,50 @@
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { formatInt } from "@/lib/format";
-import { Card } from "@/components/ui";
+import { Banner } from "@/components/ui";
+import { NavRow, PageHead } from "@/components/Design";
+import { IconTile, type IconName } from "@/components/Icons";
+
+const metrics: Array<{ key: string; label: string; icon: IconName }> = [
+  { key: "panels", label: "پنل‌ها", icon: "panels" },
+  { key: "products", label: "محصولات", icon: "product" },
+  { key: "partners", label: "همکاران", icon: "users" },
+  { key: "subscriptions", label: "اشتراک‌ها", icon: "layers" },
+  { key: "banned_partners", label: "همکار مسدود", icon: "ban" },
+];
 
 export default function AdminHome() {
   const [data, setData] = useState<Record<string, number> | null>(null);
   const [error, setError] = useState("");
   useEffect(() => {
-    api<Record<string, number>>("/admin/dashboard").then(setData).catch((err) => setError(err.message));
+    api<Record<string, number>>("/admin/dashboard").then(setData).catch(err => setError(err.message));
   }, []);
-  const cards = [
-    ["پنل‌ها", data?.panels],
-    ["محصولات", data?.products],
-    ["همکاران", data?.partners],
-    ["اشتراک‌ها", data?.subscriptions],
-    ["همکار مسدود", data?.banned_partners],
-  ];
-  return (
-    <div className="space-y-4">
-      {error ? <p className="text-red-700">{error}</p> : null}
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-        {cards.map(([label, value]) => (
-          <Card key={String(label)}>
-            <div className="text-sm text-slate-500">{label}</div>
-            <div className="mt-2 text-2xl font-bold">{value === undefined ? "…" : formatInt(value as number)}</div>
-          </Card>
-        ))}
-      </div>
+
+  return <>
+    <PageHead title="داشبورد مدیریت" description="نمای کلی سیستم و دسترسی به بخش‌های اصلی" />
+    {error && <div className="mb-4"><Banner>{error}</Banner></div>}
+    <div className="pc-admin-metrics" aria-busy={!data && !error}>
+      {metrics.map(({ key, label, icon }) => <div className="pc-card pc-metric" key={key}>
+        <IconTile name={icon} />
+        <div><p>{label}</p><strong className={key === "banned_partners" ? "pc-danger-text" : undefined}>{data?.[key] === undefined ? "—" : formatInt(data[key])}</strong></div>
+      </div>)}
     </div>
-  );
+    <div className="pc-dashboard-groups">
+      <section className="pc-card">
+        <h2 className="pc-section-title">مدیریت منابع</h2>
+        <NavRow href="/admin/panels" icon="panels" title="پنل‌های V2Board" description="اتصال و تنظیم پنل‌ها" />
+        <NavRow href="/admin/products" icon="product" title="محصولات" description="تعرفه‌ها و پلن‌های قابل ارائه" />
+      </section>
+      <section className="pc-card">
+        <h2 className="pc-section-title">مدیریت حساب‌ها</h2>
+        <NavRow href="/admin/partners" icon="users" title="همکاران" description="حساب‌ها و اعتبارها" />
+        <NavRow href="/admin/subscriptions" icon="layers" title="اشتراک‌ها" description="مشاهده و بررسی اشتراک‌ها" />
+      </section>
+      <section className="pc-card">
+        <h2 className="pc-section-title">پیگیری و حسابرسی</h2>
+        <NavRow href="/admin/operations" icon="clock" title="عملیات ناتمام" description="بررسی وضعیت و ثبت تصمیم" />
+        <NavRow href="/admin/ledger" icon="receipt" title="دفترکل" description="بازبینی ثبت‌های مالی" />
+      </section>
+    </div>
+  </>;
 }

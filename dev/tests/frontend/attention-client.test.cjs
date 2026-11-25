@@ -102,6 +102,33 @@ test("every decision states its effect on the wallet, the ledger and the panel",
   assert.match(close.panel, /هیچ درخواستی/);
 });
 
+test("reserved refunds describe conditional credit and cancellation in Persian", () => {
+  assert.equal(attention.refundLabel("reserved"), "اعتبار رزروشده");
+  assert.equal(attention.refundLabel("credited"), "اعتبار افزوده‌شده");
+  assert.equal(attention.refundLabel("voided"), "رزرو لغوشده");
+  assert.equal(attention.refundLabel(undefined), "اعتبار برگشتی");
+  assert.equal(attention.refundLabel(null), "اعتبار برگشتی");
+
+  const rows = ["decrease", "delete"].map((kind) => op({
+    kind, refund_state: "reserved", retry_action: "resend_change",
+  }));
+  for (const row of rows) {
+    assert.match(attention.decisionLabel(row, "retry"), /پیگیری/);
+    assert.match(attention.effects(row, "retry").wallet, /فقط پس از تأیید نتیجهٔ پنل/);
+    assert.match(attention.effects(row, "retry").ledger, /پس از تأیید پنل/);
+    assert.match(attention.explain(row, "retry").summary, /پس از تأیید، اعتبار رزروشده/);
+    assert.match(attention.effects(row, "close").wallet, /رزرو همین عملیات لغو می‌شود/);
+    assert.match(attention.effects(row, "close").ledger, /ردیف جدیدی ثبت نمی‌شود/);
+    assert.match(attention.explain(row, "close").warning, /موجودی قابل مصرف همکار تغییری نمی‌کند/);
+  }
+  assert.match(attention.explain(rows[0], "retry").warning, /تغییرات هم‌زمان/);
+  assert.match(attention.explain(rows[1], "retry").warning, /مالکیت/);
+
+  const legacy = op({ kind: "delete", retry_action: "resend_change" });
+  assert.match(attention.explain(legacy, "retry").warning, /قبلاً برگشت داده شده/);
+  assert.match(attention.effects(legacy, "retry").ledger, /ردیف جدیدی ثبت نمی‌شود/);
+});
+
 test("decisions the panel state rules out are hidden and explained", () => {
   const decisions = (row) => [...attention.decisions(row)];
   const missing = op({ kind: "increase", retry_action: "resend_change",
@@ -126,6 +153,19 @@ test("technical error texts are never shown raw", () => {
   assert.equal(attention.shownError("changed by another worker"), attention.TECHNICAL_ERROR);
   assert.equal(attention.shownError("عملیات شماره ۲ نیاز به بررسی دارد"), "عملیات شماره ۲ نیاز به بررسی دارد");
   assert.equal(attention.shownError(null), null);
+});
+
+test("operation details show a decision note once and preserve a distinct error", () => {
+  const note = "نتیجهٔ پنل آزمایشی بررسی شد.";
+  const completed = op({ status: "completed", resolution: "retry", resolution_note: note, last_error: ` ${note}\n` });
+  assert.equal(attention.operationDetailError(completed), null);
+  assert.equal(attention.operationDetailError({ ...completed, status: "closed", resolution: "close" }), null);
+  assert.equal(attention.operationDetailError({ ...completed, last_error: " \t" }), null);
+  assert.equal(attention.operationDetailError({ ...completed, resolution: null }), note);
+
+  const distinct = "پاسخ پنل قابل خواندن نیست.";
+  assert.equal(attention.operationDetailError({ ...completed, last_error: distinct }), distinct);
+  assert.equal(attention.operationDetailError({ ...completed, last_error: "upstream unavailable" }), attention.TECHNICAL_ERROR);
 });
 
 test("the decision carries the version the admin saw", () => {

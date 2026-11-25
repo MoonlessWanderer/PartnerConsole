@@ -4,9 +4,9 @@ module.exports = {
   theme: {
     extend: {
       colors: {
-        ink: "#0f172a",
-        brand: "#0F766E",
-        branddark: "#115e59",
+        ink: "var(--pc-text)",
+        brand: "var(--pc-brand)",
+        branddark: "var(--pc-brand-deep)",
       },
       fontFamily: {
         sans: ["Vazirmatn", "Tahoma", "sans-serif"],

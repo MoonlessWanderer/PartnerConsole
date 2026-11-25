@@ -716,6 +716,15 @@ def _affordable(toman: int, balance: int) -> tuple[bool, int]:
     return shortage == 0, shortage
 
 
+def _quote_used_bytes(sub: Subscription, gateway) -> int:
+    if gateway is None:
+        raise AppError("اتصال پنل برای خواندن مصرف لازم است", 502)
+    info = gateway.get_user_info(sub.v2_user_id)
+    if not owns_panel_user(info, panel_email(sub, sub.product)):
+        raise AppError(FOREIGN_TARGET, 409)
+    return used_bytes_of(info)
+
+
 def quote_operation(
     db: Session,
     *,
@@ -769,9 +778,7 @@ def quote_operation(
         elif action == "decrease":
             used_bytes = None
             if traffic_cap_gb is not None and qgb(traffic_cap_gb) < qgb(sub.traffic_cap_gb):
-                if gateway is None:
-                    raise AppError("اتصال پنل برای خواندن مصرف لازم است", 502)
-                used_bytes = used_bytes_of(gateway.get_user_info(sub.v2_user_id))
+                used_bytes = _quote_used_bytes(sub, gateway)
                 used = bytes_to_gb(used_bytes)
             try:
                 _cap, _exp, gb_refund, days_refund = _resolve_decrease(
@@ -788,19 +795,13 @@ def quote_operation(
                 end = _parse_end(end_date)
             base = ts_to_tehran_date(int(sub.expired_at))
         elif action == "delete":
-            if gateway is None:
-                raise AppError("اتصال پنل برای خواندن مصرف لازم است", 502)
-            info = gateway.get_user_info(sub.v2_user_id)
-            used = used_gb_of(info)
+            used = bytes_to_gb(_quote_used_bytes(sub, gateway))
             left = days_left(int(sub.expired_at), int(current.timestamp()))
             gb_refund, days_refund = refund_delete(sub.traffic_cap_gb, used, left)
             base = current.date()
             end = ts_to_tehran_date(int(sub.expired_at))
         elif action == "reset_traffic":
-            if gateway is None:
-                raise AppError("اتصال پنل برای خواندن مصرف لازم است", 502)
-            info = gateway.get_user_info(sub.v2_user_id)
-            raw_used = used_bytes_of(info)
+            raw_used = _quote_used_bytes(sub, gateway)
             used = bytes_to_gb(raw_used)
             if raw_used <= 0:
                 message = "مصرفی برای ریست وجود ندارد"

@@ -30,6 +30,7 @@ from app.core.timeutil import (
 from app.integrations.v2board import V2BoardClient
 from app.models import Panel, PanelOperation, Partner, PartnerProductCredit, Product, Subscription, WalletLedger
 from app.services.billing import gb_to_bytes, quote_charge
+from app.services.money_sync import drive_operation, reconcile_pending, resolve_attention
 from app.services.panels import plan_warnings
 from app.services.subscriptions import (
     Actor,
@@ -770,6 +771,45 @@ def _toman_ledgers(db, reason: str):
     )
 
 
+def _refund_ledgers(db, kind):
+    reason = "delete_refund" if kind == "delete" else "decrease"
+    return db.scalars(select(WalletLedger).where(WalletLedger.reason == reason).order_by(WalletLedger.asset)).all()
+
+
+def _credit_amounts(db):
+    return db.execute(select(PartnerProductCredit.credit_gb, PartnerProductCredit.credit_days)).one()
+
+
+def _legacy_refund(db, sub, kind, *, status="pending"):
+    """Represent a journal written before refunds were deferred."""
+    credit = db.scalar(select(PartnerProductCredit))
+    gb, days = (16, 10) if kind == "delete" else (5, 0)
+    data = {
+        "actor_type": "partner", "actor_id": sub.partner_id, "panel_sent": True, "panel_applied": False,
+        "email_domain": sub.email_domain, "plan_id": sub.plan_id, "v2_user_id": sub.v2_user_id,
+        "subscription_id": sub.id, "gb_back": str(gb), "days_back": days, "used_gb": "4",
+    }
+    if kind == "decrease":
+        data.update(old_cap=str(sub.traffic_cap_gb), new_cap=str(sub.traffic_cap_gb - gb),
+                    old_expired_at=sub.expired_at, new_expired_at=sub.expired_at)
+    if status == "pending":
+        credit.credit_gb, credit.credit_days = gb, days
+        if kind == "decrease":
+            sub.traffic_cap_gb = Decimal(data["new_cap"])
+    else:
+        data.update(shortfall_gb=str(gb), shortfall_days=days)
+    for asset, amount in (("gb", gb), ("days", days)):
+        if amount:
+            db.add(WalletLedger(partner_id=sub.partner_id, product_id=sub.product_id, subscription_id=sub.id,
+                                asset=asset, amount=amount, reason="delete_refund" if kind == "delete" else "decrease",
+                                actor_type="partner", actor_id=sub.partner_id))
+    op = PanelOperation(partner_id=sub.partner_id, product_id=sub.product_id, subscription_id=sub.id,
+                        username=sub.username, kind=kind, status=status, payload=json.dumps(data))
+    db.add(op)
+    db.commit()
+    return op
+
+
 def test_increase_timeout_is_resumed_without_a_second_charge(db, sim):
     partner, product = seed(db)
     client = gateway(sim)
@@ -937,7 +977,7 @@ def test_create_timeout_after_panel_insert_does_not_generate_twice(db, sim):
     client.close()
 
 
-def test_delete_timeout_keeps_one_refund_and_retry_removes_the_row(db, sim):
+def test_delete_timeout_holds_refund_and_retry_settles_once(db, sim):
     partner, product = seed(db)
     client = gateway(sim)
     sub, _, _ = create_subscription(
@@ -967,9 +1007,10 @@ def test_delete_timeout_keeps_one_refund_and_retry_removes_the_row(db, sim):
     assert caught.value.status_code == 503
     db.rollback()
     db.refresh(partner)
-    credit = db.scalar(select(PartnerProductCredit))
-    assert credit.credit_gb == 16
-    assert credit.credit_days == 10
+    op = _pending(db)
+    assert json.loads(op.payload)["refund_deferred"] is True
+    assert _credit_amounts(db) == (0, 0)
+    assert _refund_ledgers(db, "delete") == []
     assert int(partner.balance_toman) == balance
     assert db.get(Subscription, sub.id) is not None
     assert sim.users == {}
@@ -982,15 +1023,69 @@ def test_delete_timeout_keeps_one_refund_and_retry_removes_the_row(db, sim):
         now=NOW,
     )
     db.refresh(partner)
-    credit = db.scalar(select(PartnerProductCredit))
     assert result["gb_refund"] == "16"
     assert result["days_refund"] == 10
-    assert credit.credit_gb == 16
-    assert credit.credit_days == 10
+    assert _credit_amounts(db) == (16, 10)
     assert int(partner.balance_toman) == balance
     assert db.scalar(select(Subscription.id)) is None
-    assert len(list(db.scalars(select(WalletLedger).where(WalletLedger.reason == "delete_refund")))) == 2
+    assert drive_operation(db, op, cut) == result
+    rows = _refund_ledgers(db, "delete")
+    assert [(row.asset, row.amount) for row in rows] == [("days", 10), ("gb", 16)]
+    assert all(row.subscription_id is None for row in rows)
+    assert cut.calls == 1
     client.close()
+
+
+def test_decrease_timeout_holds_refund_and_retry_settles_once(db, sim):
+    partner, product = seed(db)
+    with gateway(sim) as client:
+        actor = Actor("partner", partner.id)
+        sub, _, _ = create_subscription(
+            db, partner_id=partner.id, product_id=product.id, username="ali01", traffic_cap_gb=20,
+            end_date=jalali(date(2026, 6, 25)), note=None, actor=actor, gateway=client, now=NOW,
+        )
+        balance = int(partner.balance_toman)
+        updates_before = len(sim.updates)
+
+        class ApplyThenTimeout:
+            def update_user(self, payload):
+                client.update_user(payload)
+                raise httpx.ReadTimeout("confirmation interrupted")
+
+            def __getattr__(self, name):
+                return getattr(client, name)
+
+        end_date = jalali(date(2026, 6, 20))
+        with pytest.raises(AppError) as caught:
+            decrease_subscription(db, sub_id=sub.id, partner_id=partner.id, traffic_cap_gb=Decimal(15),
+                                  end_date=end_date, actor=actor, gateway=ApplyThenTimeout(), now=NOW)
+        assert caught.value.status_code == 503
+        db.rollback()
+        op = _pending(db)
+        assert json.loads(op.payload)["refund_deferred"] is True
+        assert _credit_amounts(db) == (0, 0)
+        assert _refund_ledgers(db, "decrease") == []
+        offer = quote_operation(db, partner_id=partner.id, action="create", product_id=product.id,
+                                subscription_id=None, traffic_cap_gb=Decimal(5), end_date=end_date,
+                                gateway=None, now=NOW)
+        assert Decimal(offer["credit_gb"]) == offer["credit_days"] == 0
+        assert offer["toman"] == 10_000
+        assert sim.users[sub.v2_user_id]["transfer_enable"] == 15 * GB
+
+        outcome = drive_operation(db, op, client)
+        assert (outcome["gb_back"], outcome["days_back"]) == (5, 5)
+        repeated = drive_operation(db, op, client)
+        assert (repeated["gb_back"], repeated["days_back"]) == (5, 5)
+        db.refresh(sub)
+        db.refresh(partner)
+        assert sub.traffic_cap_gb == 15 and sub.expired_at == end_of_day_ts(date(2026, 6, 20))
+        assert _credit_amounts(db) == (5, 5)
+        assert partner.balance_toman == balance
+        rows = _refund_ledgers(db, "decrease")
+        assert [(row.asset, row.amount, row.subscription_id, row.actor_type, row.actor_id) for row in rows] == [
+            ("days", 5, sub.id, "partner", partner.id), ("gb", 5, sub.id, "partner", partner.id),
+        ]
+        assert len(sim.updates) - updates_before == 1
 
 
 def test_reset_timeout_after_panel_zero_does_not_charge_again(db, sim):
@@ -1080,7 +1175,7 @@ def test_reconcile_finishes_a_pending_increase_without_charging_again(db, sim):
     fresh.close()
 
 
-def test_spent_decrease_refund_is_marked_for_review_and_blocks_the_next_change(db, sim):
+def test_legacy_decrease_shortfall_remains_in_review_and_blocks_the_next_change(db, sim):
     partner, product = seed(db, balance=100_000)
     client = gateway(sim)
     sub, _, _ = create_subscription(
@@ -1097,40 +1192,11 @@ def test_spent_decrease_refund_is_marked_for_review_and_blocks_the_next_change(d
     )
     paid = int(partner.balance_toman)
 
-    class Spend:
-        def __init__(self, inner):
-            self.inner = inner
-
-        def update_user(self, _payload):
-            credit = db.scalar(select(PartnerProductCredit))
-            credit.credit_gb = 0
-            credit.credit_days = 0
-            db.commit()
-            raise _refused()
-
-        def __getattr__(self, name):
-            return getattr(self.inner, name)
-
-    with pytest.raises(AppError) as caught:
-        decrease_subscription(
-            db,
-            sub_id=sub.id,
-            partner_id=partner.id,
-            traffic_cap_gb=Decimal(15),
-            end_date=None,
-            actor=Actor("partner", partner.id),
-            gateway=Spend(client),
-            now=NOW,
-        )
-    assert caught.value.status_code == 409
-    db.rollback()
-    db.refresh(partner)
-    db.refresh(sub)
-    credit = db.scalar(select(PartnerProductCredit))
-    op = db.scalar(select(PanelOperation).where(PanelOperation.kind == "decrease"))
+    op = _legacy_refund(db, sub, "decrease", status="attention")
+    assert reconcile_pending(db, lambda _panel: gateway(sim)) == 0
     assert op.status == "attention"
     assert sub.traffic_cap_gb == 20
-    assert credit.credit_gb == 0
+    assert _credit_amounts(db) == (0, 0)
     assert int(partner.balance_toman) == paid
     assert sim.users[sub.v2_user_id]["transfer_enable"] == gb_to_bytes(20)
     with pytest.raises(AppError) as blocked:
@@ -1146,6 +1212,238 @@ def test_spent_decrease_refund_is_marked_for_review_and_blocks_the_next_change(d
         )
     assert blocked.value.status_code == 409
     client.close()
+
+
+@pytest.mark.parametrize("snapshot", ["old_bounds", "wrong_expiry", "foreign_owner"])
+def test_decrease_acknowledgement_without_verified_target_holds_refund(db, sim, snapshot):
+    partner, product = seed(db)
+    with gateway(sim) as client:
+        actor = Actor("partner", partner.id)
+        sub, _, _ = create_subscription(
+            db, partner_id=partner.id, product_id=product.id, username="ali01", traffic_cap_gb=20,
+            end_date=jalali(date(2026, 6, 25)), note=None, actor=actor, gateway=client, now=NOW,
+        )
+        old_expiry = sub.expired_at
+        balance = int(partner.balance_toman)
+
+        class AcknowledgedChange:
+            def update_user(self, payload):
+                if snapshot == "old_bounds":
+                    return
+                if snapshot == "wrong_expiry":
+                    payload = dict(payload, expired_at=old_expiry)
+                client.update_user(payload)
+                if snapshot == "foreign_owner":
+                    sim.users[payload["id"]]["email"] = "other-owner@gold.example.com"
+
+            def __getattr__(self, name):
+                return getattr(client, name)
+
+        with pytest.raises(AppError) as caught:
+            decrease_subscription(db, sub_id=sub.id, partner_id=partner.id, traffic_cap_gb=Decimal(15),
+                                  end_date=jalali(date(2026, 6, 20)), actor=actor,
+                                  gateway=AcknowledgedChange(), now=NOW)
+        assert caught.value.status_code == 409
+        db.rollback()
+        op = db.scalar(select(PanelOperation).where(PanelOperation.kind == "decrease"))
+        data = json.loads(op.payload)
+        assert op.status == "attention" and data["refund_deferred"] is True and not data["panel_applied"]
+        assert "shortfall_gb" not in data and "shortfall_days" not in data
+        assert _credit_amounts(db) == (0, 0)
+        assert _refund_ledgers(db, "decrease") == []
+        assert reconcile_pending(db, lambda _panel: gateway(sim)) == 0
+        db.refresh(partner)
+        assert partner.balance_toman == balance
+        if snapshot == "foreign_owner":
+            closed = resolve_attention(db, op.id, decision="close", actor=Actor("admin", 1),
+                                       note="مالک پنل بررسی شد", gateway_factory=lambda _panel: gateway(sim))
+            assert closed["status"] == "closed"
+            db.refresh(sub)
+            assert (sub.traffic_cap_gb, sub.expired_at) == (20, old_expiry)
+            assert sim.users[sub.v2_user_id]["email"] == "other-owner@gold.example.com"
+            assert _credit_amounts(db) == (0, 0)
+            assert _refund_ledgers(db, "decrease") == []
+            assert db.scalars(select(WalletLedger).where(WalletLedger.reason == "operation_rollback")).all() == []
+
+
+def test_marked_refund_attention_can_retry_after_verified_owner_returns(db, sim):
+    partner, product = seed(db)
+    with gateway(sim) as client:
+        sub, _, _ = create_subscription(
+            db, partner_id=partner.id, product_id=product.id, username="ali01", traffic_cap_gb=20,
+            end_date=jalali(date(2026, 6, 25)), note=None, actor=Actor("partner", partner.id),
+            gateway=client, now=NOW,
+        )
+        data = {
+            "refund_deferred": True, "foreign_target": True, "panel_sent": True, "panel_applied": False,
+            "actor_type": "partner", "actor_id": partner.id, "email_domain": sub.email_domain,
+            "plan_id": sub.plan_id, "v2_user_id": sub.v2_user_id, "subscription_id": sub.id,
+            "old_cap": "20", "new_cap": "15", "old_expired_at": sub.expired_at, "new_expired_at": sub.expired_at,
+            "gb_back": "5", "days_back": 0,
+        }
+        op = PanelOperation(partner_id=partner.id, product_id=product.id, subscription_id=sub.id,
+                            username=sub.username, kind="decrease", status="attention", payload=json.dumps(data))
+        sub.traffic_cap_gb = Decimal(15)
+        db.add(op)
+        db.commit()
+        user = sim.users[sub.v2_user_id]
+        owner = user["email"]
+        user.update(email="other-owner@gold.example.com", transfer_enable=15 * GB)
+
+        def panel_factory(_panel):
+            return gateway(sim)
+
+        with pytest.raises(AppError):
+            resolve_attention(db, op.id, decision="retry", actor=Actor("admin", 1),
+                              note="مالک تازه بررسی شد", gateway_factory=panel_factory)
+        db.rollback()
+        assert _credit_amounts(db) == (0, 0) and _refund_ledgers(db, "decrease") == []
+
+        user["email"] = owner
+        before = len(sim.updates)
+        pending = resolve_attention(db, op.id, decision="retry", actor=Actor("admin", 1),
+                                    note="مالک اصلی تأیید شد", gateway_factory=panel_factory)
+        assert pending["status"] == "pending"
+        assert reconcile_pending(db, panel_factory) == 1
+        assert reconcile_pending(db, panel_factory) == 0
+        assert len(sim.updates) == before and _credit_amounts(db) == (5, 0)
+        assert [(row.asset, row.amount) for row in _refund_ledgers(db, "decrease")] == [("gb", 5)]
+
+
+def test_decrease_attention_keeps_reservation_when_retry_is_refused_then_settles_late_confirmation(db, sim):
+    partner, product = seed(db)
+    with gateway(sim) as client:
+        actor = Actor("partner", partner.id)
+        admin = Actor("admin", 1)
+        sub, _, _ = create_subscription(
+            db, partner_id=partner.id, product_id=product.id, username="ali01", traffic_cap_gb=20,
+            end_date=jalali(date(2026, 6, 25)), note=None, actor=actor, gateway=client, now=NOW,
+        )
+        original = []
+
+        class DelayedUpdate:
+            def update_user(self, payload):
+                original.append(payload)
+
+            def __getattr__(self, name):
+                return getattr(client, name)
+
+        class RejectRetry(DelayedUpdate):
+            def update_user(self, _payload):
+                raise _refused()
+
+        with pytest.raises(AppError) as first:
+            decrease_subscription(db, sub_id=sub.id, partner_id=partner.id, traffic_cap_gb=Decimal(15),
+                                  end_date=None, actor=actor, gateway=DelayedUpdate(), now=NOW)
+        assert first.value.status_code == 409
+        db.rollback()
+        op = db.scalar(select(PanelOperation).where(PanelOperation.kind == "decrease"))
+        assert op.status == "attention"
+        def panel_factory(_panel):
+            return gateway(sim)
+
+        with pytest.raises(AppError) as close_block:
+            resolve_attention(db, op.id, decision="close", actor=admin,
+                              note="هنوز روی پنل دیده نشد", gateway_factory=panel_factory)
+        assert close_block.value.status_code == 409
+        db.rollback()
+        pending = resolve_attention(db, op.id, decision="retry", actor=admin,
+                                    note="یک بار دیگر بررسی شود", gateway_factory=panel_factory)
+        assert pending["status"] == "pending"
+        with pytest.raises(AppError) as refused:
+            drive_operation(db, op, RejectRetry())
+        assert refused.value.status_code == 409
+        db.rollback()
+        db.refresh(op)
+        assert op.status == "attention" and json.loads(op.payload)["refund_prior_send"] is True
+        assert _credit_amounts(db) == (0, 0) and _refund_ledgers(db, "decrease") == []
+
+        client.update_user(original[0])
+        confirmed_update_count = len(sim.updates)
+        pending = resolve_attention(db, op.id, decision="retry", actor=admin,
+                                    note="نتیجه روی پنل دیده شد", gateway_factory=panel_factory)
+        assert pending["status"] == "pending"
+        assert reconcile_pending(db, panel_factory) == 1
+        assert reconcile_pending(db, panel_factory) == 0
+        assert len(sim.updates) == confirmed_update_count
+        db.refresh(op)
+        assert op.status == "completed" and _credit_amounts(db) == (5, 0)
+        rows = _refund_ledgers(db, "decrease")
+        assert [(row.asset, row.amount) for row in rows] == [("gb", 5)]
+
+
+@pytest.mark.parametrize("rejected", [False, True], ids=["acknowledged_with_user_present", "rejected"])
+def test_delete_requires_authoritative_absence_to_release_refund(db, sim, rejected):
+    partner, product = seed(db)
+    with gateway(sim) as client:
+        actor = Actor("partner", partner.id)
+        sub, _, _ = create_subscription(
+            db, partner_id=partner.id, product_id=product.id, username="ali01", traffic_cap_gb=20,
+            end_date=jalali(date(2026, 6, 25)), note=None, actor=actor, gateway=client, now=NOW,
+        )
+        sim.users[sub.v2_user_id]["u"] = 4 * GB
+        balance = int(partner.balance_toman)
+
+        class UnconfirmedDelete:
+            def delete_user(self, _user_id):
+                if rejected:
+                    raise _refused()
+
+            def __getattr__(self, name):
+                return getattr(client, name)
+
+        with pytest.raises(AppError) as caught:
+            delete_subscription(db, sub_id=sub.id, partner_id=partner.id, actor=actor,
+                                gateway=UnconfirmedDelete(), now=NOW)
+        db.rollback()
+        op = db.scalar(select(PanelOperation).where(PanelOperation.kind == "delete"))
+        assert op.status == ("failed" if rejected else "pending")
+        if rejected:
+            assert isinstance(caught.value, V2BoardError)
+        else:
+            assert caught.value.status_code == 503
+        assert sub.v2_user_id in sim.users and db.get(Subscription, sub.id) is not None
+        assert _credit_amounts(db) == (0, 0) and _refund_ledgers(db, "delete") == []
+        assert db.scalars(select(WalletLedger).where(WalletLedger.reason == "operation_rollback")).all() == []
+        db.refresh(partner)
+        assert partner.balance_toman == balance
+
+        if not rejected:
+            client.delete_user(sub.v2_user_id)
+            assert reconcile_pending(db, lambda _panel: gateway(sim)) == 1
+            assert reconcile_pending(db, lambda _panel: gateway(sim)) == 0
+            assert _credit_amounts(db) == (16, 10)
+            assert [(row.asset, row.amount) for row in _refund_ledgers(db, "delete")] == [("days", 10), ("gb", 16)]
+            assert len(sim.deleted) == 1
+
+
+@pytest.mark.parametrize("kind", ["decrease", "delete"])
+def test_old_pending_refund_is_not_paid_again_on_recovery(db, sim, kind):
+    partner, product = seed(db)
+    with gateway(sim) as client:
+        sub, _, _ = create_subscription(
+            db, partner_id=partner.id, product_id=product.id, username="ali01", traffic_cap_gb=20,
+            end_date=jalali(date(2026, 6, 25)), note=None, actor=Actor("partner", partner.id),
+            gateway=client, now=NOW,
+        )
+        balance = int(partner.balance_toman)
+        op = _legacy_refund(db, sub, kind)
+        amounts = _credit_amounts(db)
+        ids = [row.id for row in _refund_ledgers(db, kind)]
+        if kind == "decrease":
+            sim.users[sub.v2_user_id]["transfer_enable"] = 15 * GB
+        else:
+            del sim.users[sub.v2_user_id]
+        start = (len(sim.updates), len(sim.deleted))
+        assert reconcile_pending(db, lambda _panel: gateway(sim)) == 1
+        assert reconcile_pending(db, lambda _panel: gateway(sim)) == 0
+        db.refresh(op)
+        assert op.status == "completed" and "refund_deferred" not in json.loads(op.payload)
+        assert (len(sim.updates), len(sim.deleted)) == start
+        assert _credit_amounts(db) == amounts
+        assert [row.id for row in _refund_ledgers(db, kind)] == ids
+        db.refresh(partner)
+        assert partner.balance_toman == balance
 
 
 def test_definite_decrease_and_reset_errors_reverse_once(db, sim):
@@ -1196,6 +1494,10 @@ def test_definite_decrease_and_reset_errors_reverse_once(db, sim):
     credit = db.scalar(select(PartnerProductCredit))
     assert sub.traffic_cap_gb == 20
     assert credit.credit_gb == 0
+    op = db.scalar(select(PanelOperation).where(PanelOperation.kind == "decrease"))
+    assert op.status == "failed"
+    assert _refund_ledgers(db, "decrease") == []
+    assert db.scalars(select(WalletLedger).where(WalletLedger.reason == "operation_rollback")).all() == []
     assert sim.users[sub.v2_user_id]["transfer_enable"] == gb_to_bytes(20)
     decrease_subscription(
         db,
@@ -1566,8 +1868,8 @@ def test_leased_operation_is_not_run_twice(tmp_path, sim):
         engine.dispose()
 
 
-def test_attention_can_be_closed_or_collected_without_touching_the_panel(db, sim):
-    from app.services.money_sync import list_operations, resolve_attention
+def test_legacy_attention_can_be_closed_or_collected_without_touching_the_panel(db, sim):
+    from app.services.money_sync import list_operations
 
     partner, product = seed(db, balance=100_000)
     client = gateway(sim)
@@ -1585,32 +1887,7 @@ def test_attention_can_be_closed_or_collected_without_touching_the_panel(db, sim
     )
     paid = int(partner.balance_toman)
 
-    class Spend:
-        def __init__(self, inner):
-            self.inner = inner
-
-        def update_user(self, _payload):
-            credit = db.scalar(select(PartnerProductCredit))
-            credit.credit_gb = 0
-            credit.credit_days = 0
-            db.commit()
-            raise _refused()
-
-        def __getattr__(self, name):
-            return getattr(self.inner, name)
-
-    with pytest.raises(AppError):
-        decrease_subscription(
-            db,
-            sub_id=sub.id,
-            partner_id=partner.id,
-            traffic_cap_gb=Decimal(15),
-            end_date=None,
-            actor=Actor("partner", partner.id),
-            gateway=Spend(client),
-            now=NOW,
-        )
-    op = db.scalar(select(PanelOperation).where(PanelOperation.kind == "decrease"))
+    op = _legacy_refund(db, sub, "decrease", status="attention")
     assert op.status == "attention"
     assert list_operations(db, "attention")[0]["id"] == op.id
     panel_before = sim.users[sub.v2_user_id]["transfer_enable"]
@@ -1649,18 +1926,7 @@ def test_attention_can_be_closed_or_collected_without_touching_the_panel(db, sim
     db.refresh(sub)
     assert sub.traffic_cap_gb == 21
 
-    with pytest.raises(AppError):
-        decrease_subscription(
-            db,
-            sub_id=sub.id,
-            partner_id=partner.id,
-            traffic_cap_gb=Decimal(16),
-            end_date=None,
-            actor=Actor("partner", partner.id),
-            gateway=Spend(client),
-            now=NOW,
-        )
-    stuck = db.scalar(select(PanelOperation).where(PanelOperation.status == "attention"))
+    stuck = _legacy_refund(db, sub, "decrease", status="attention")
     credit = db.scalar(select(PartnerProductCredit))
     credit.credit_gb = Decimal(5)
     db.commit()
@@ -1671,6 +1937,11 @@ def test_attention_can_be_closed_or_collected_without_touching_the_panel(db, sim
     assert resolved["status"] == "failed"
     assert credit.credit_gb == 0
     assert sim.users[sub.v2_user_id]["transfer_enable"] == panel_again
+    reversal = db.scalars(select(WalletLedger).where(WalletLedger.reason == "operation_rollback")).one()
+    assert (reversal.asset, reversal.amount) == ("gb", -5)
+    with pytest.raises(AppError):
+        resolve_attention(db, stuck.id, decision="retry", actor=Actor("admin", 1), note="تکرار")
+    assert db.scalars(select(WalletLedger).where(WalletLedger.reason == "operation_rollback")).one().id == reversal.id
     client.close()
 
 

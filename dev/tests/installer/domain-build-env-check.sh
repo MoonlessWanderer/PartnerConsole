@@ -57,7 +57,7 @@ build_case "NEXT_PUBLIC_API_BASE=$origin\nWEB_TOKEN=web-secret-sentinel\n" unset
 IFS='|' read -r seen cwd mask args < "$calls"
 [[ "$seen" == "$origin" ]] || fail "npm received $seen"
 [[ "$cwd" -ef "$PP_ROOT" ]] || fail "npm ran in $cwd"
-[[ "$mask" == 0027 ]] || fail "the build changed the umask to $mask"
+[[ "$mask" == 0077 ]] || fail "the build did not receive a private umask: $mask"
 [[ "$args" == "run build --prefix $PP_ROOT" ]] || fail "unexpected npm arguments $args"
 [[ "$(umask)" == 0027 && ! -v NEXT_PUBLIC_API_BASE ]] || fail 'the build changed the caller environment'
 ok 'web.env reaches npm in a custom install root without changing the caller'
