@@ -79,6 +79,7 @@ backend/app/services/present.py
 backend/app/services/subscriptions.py
 backend/pyproject.toml
 components/Design.tsx
+components/DraftLeaveWarning.tsx
 components/Icons.tsx
 components/JalaliDateField.tsx
 components/LedgerTable.tsx

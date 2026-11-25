@@ -19,12 +19,9 @@ export function Modal({
   useEffect(() => {
     const dialog = dialogRef.current;
     if (!dialog) return;
-    const previous = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
     dialog.showModal();
     return () => {
       dialog.close();
-      document.body.style.overflow = previous;
     };
   }, []);
 

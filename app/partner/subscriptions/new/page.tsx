@@ -1,5 +1,7 @@
 "use client";
 
+import { DraftLeaveWarning } from "@/components/DraftLeaveWarning";
+
 import { PageHead, Facts } from "@/components/Design";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
@@ -128,6 +130,7 @@ export default function NewSubscriptionPage() {
 
   return (
     <div className={styles.page}>
+      <DraftLeaveWarning dirty={!inputsLocked && Boolean(draft.username || draft.note || draft.end_date)}/>
       <PageHead title={reviewOpen ? "بررسی پیش‌فاکتور" : "ساخت اشتراک"} back={{href:"/partner/subscriptions",label:"اشتراک‌ها"}} />
       <form className={styles.layout} data-review={reviewOpen} onSubmit={submit}>
         <section className={styles.card+" pc-purchase-fields"} aria-labelledby="purchase-fields" hidden={reviewOpen}>

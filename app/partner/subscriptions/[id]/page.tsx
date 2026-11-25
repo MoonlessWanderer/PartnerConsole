@@ -1,5 +1,7 @@
 "use client";
 
+import { DraftLeaveWarning } from "@/components/DraftLeaveWarning";
+
 import Link from "next/link";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useRef, useState } from "react";
@@ -248,6 +250,7 @@ export default function SubscriptionDetailPage() {
     </div>;
     return <div className="space-y-4">
       {backLink}
+      <DraftLeaveWarning dirty={noteOpen && !pending && note !== (row.note || "")}/>
       <div className="pc-page-head"><h1 ref={heading} tabIndex={-1}>{title}</h1></div>
       {error&&<Banner>{error}</Banner>}
       {changing ? <div className="pc-grid-two">

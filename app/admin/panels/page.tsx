@@ -1,5 +1,7 @@
 "use client";
 
+import { DraftLeaveWarning } from "@/components/DraftLeaveWarning";
+
 import { useParams, usePathname, useRouter } from "next/navigation";
 import { type FormEvent, useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
@@ -79,6 +81,7 @@ export default function PanelsPage() {
     <PageHead title={editing?"ویرایش پنل":"افزودن پنل"} back={{href:root,label:"پنل‌ها"}}
       action={panel&&<Button tone="ghost" disabled={Boolean(pending)} onClick={()=>test(panel.id)}><Icon name="reset"/>تست اتصال</Button>} />
     {feedback}
+    <DraftLeaveWarning dirty={Boolean(form.admin_password) && pending !== "save"}/>
     {editing&&!panel ? <p role="status" className="pc-card">{items?"پنل پیدا نشد.":error?"اطلاعات پنل در دسترس نیست.":"در حال بارگیری پنل…"}</p> :
       <div className="pc-grid-two">
         <form className="pc-card pc-form-card" onSubmit={save}>
@@ -115,7 +118,7 @@ export default function PanelsPage() {
         const badge=status(item);
         const edit=<ActionLink href={`${root}/${item.id}/edit`} secondary>ویرایش</ActionLink>;
         const check=<Button tone="ghost" disabled={Boolean(pending)} onClick={()=>test(item.id)}>تست اتصال</Button>;
-        return {id:item.id,cells:[item.name,<bdi dir="ltr" className="break-all">{item.base_url}</bdi>,badge,formatDate(item.last_ok_jalali),<div className="flex flex-wrap gap-1">{check}{edit}</div>],title:item.name,summary:<bdi dir="ltr">{item.base_url}</bdi>,aside:badge,action:edit};
+        return {id:item.id,cells:[item.name,<bdi dir="ltr" className="break-all">{item.base_url}</bdi>,badge,formatDate(item.last_ok_jalali),<div className="flex flex-wrap gap-1">{check}{edit}</div>],title:item.name,summary:<><bdi dir="ltr">{item.base_url}</bdi><p>آخرین تست: {formatDate(item.last_ok_jalali)}</p>{check}</>,aside:badge,action:edit};
       })}/> : !error && <p className="pc-card pc-quiet" role="status">در حال بارگیری پنل‌ها…</p>}
   </div>;
 }

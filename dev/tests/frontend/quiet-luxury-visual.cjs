@@ -281,6 +281,7 @@ async function inspectResponsive(browser, fixture) {
     const ctx = await context(browser, { width, height });
     try {
       const page = await ctx.newPage();
+      page.setDefaultTimeout(8000);
       await login(page, "partner");
       await h1(page, new RegExp(partnerUsername)).waitFor();
       const noOverflow = async () => {
@@ -300,7 +301,7 @@ async function inspectResponsive(browser, fixture) {
         assert.ok(await open.evaluate(el => el === document.activeElement));
       }
       await page.goto(web + "/partner/subscriptions");
-      const search = page.getByRole("textbox", { name: "جست‌وجوی نام کاربری" });
+      const search = page.getByRole("searchbox", { name: "جست‌وجوی نام کاربری" });
       await search.fill(fixture.subscription.username);
       await page.waitForURL(url => url.searchParams.get("q") === fixture.subscription.username);
       const detail = page.locator("main a[href*='/partner/subscriptions/" + fixture.subscription.id + "?']").filter({ visible: true });
@@ -318,8 +319,18 @@ async function inspectResponsive(browser, fixture) {
       await page.goto(web + "/partner/subscriptions/new");
       await h1(page, "ساخت اشتراک").waitFor();
       await field(page, "محصول").selectOption(String(fixture.product.id));
-      await field(page, "نام کاربری").fill("a_1234567890_1234567890_123456789");
+      const longUsername = "a_" + "0123456789".repeat(3);
+      const username = field(page, "نام کاربری");
+      await username.fill(longUsername);
       await noOverflow();
+      await page.getByRole("main").getByRole("link", { name: "اشتراک‌ها", exact: true }).click();
+      const warning = page.getByRole("dialog", { name: "خروج از فرم" });
+      await warning.getByRole("button", { name: "ادامهٔ ویرایش" }).click();
+      assert.equal(await username.inputValue(), longUsername);
+      await page.getByRole("main").getByRole("link", { name: "اشتراک‌ها", exact: true }).click();
+      await warning.getByRole("button", { name: "خروج بدون ذخیره" }).click();
+      await page.waitForURL(web + "/partner/subscriptions");
+      assert.notEqual(await page.evaluate(() => getComputedStyle(document.body).overflow), "hidden");
       await page.goto(web + "/partner/ledger");
       await h1(page, "تاریخچه تراکنش‌ها").waitFor();
       await page.getByText("ساخت اشتراک", { exact: true }).filter({ visible: true }).first().waitFor();

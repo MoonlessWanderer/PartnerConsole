@@ -1,5 +1,7 @@
 "use client";
 
+import { DraftLeaveWarning } from "@/components/DraftLeaveWarning";
+
 import { useEffect, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import { api } from "@/lib/api";
@@ -200,6 +202,7 @@ export default function AdminOperations() {
       back={{href:listHref,label:"عملیات ناتمام"}}/>
     {error && <Banner>{error}</Banner>}
     {notice && <Banner tone="ok">{notice}</Banner>}
+    <DraftLeaveWarning dirty={(resolving || Boolean(confirmation)) && !submitting && Boolean(form.note.trim())}/>
     {!current ? !error&&<p role="status" className="pc-card">در حال بارگیری عملیات…</p> : confirmation ? (
       <section className="pc-card pc-form-card mx-auto max-w-2xl">
         <h2 className="pc-section-title">{decisionLabel(current, form.decision as Decision)}</h2>

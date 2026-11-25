@@ -52,8 +52,6 @@ export function AppShell({ role, items, loginPath, children }: {
     const dialog = drawer.current;
     if (!open || !dialog) return;
     dialog.showModal();
-    const before = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
     const desktop = window.matchMedia("(min-width: 1024px)");
     function closeOnDesktop() {
       if (desktop.matches) setOpen(false);
@@ -62,7 +60,6 @@ export function AppShell({ role, items, loginPath, children }: {
     return () => {
       dialog.close();
       desktop.removeEventListener("change", closeOnDesktop);
-      document.body.style.overflow = before;
       trigger.current?.focus();
     };
   }, [open, activeSession]);

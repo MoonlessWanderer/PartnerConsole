@@ -151,7 +151,7 @@ export default function ProductsPage() {
           const badge=<Badge tone={product.active?"ok":"slate"}>{product.active?"فعال":"غیرفعال"}</Badge>;
           const action=<Button tone="ghost" onClick={()=>toggle(product)}>{product.active?"خاموش کردن":"روشن کردن"}</Button>;
           return {id:product.id,cells:[product.name,product.panel_name,product.plan_id,<bdi dir="ltr" className="break-all">{product.email_domain}</bdi>,formatToman(product.price_per_gb),formatToman(product.price_per_day),badge,action],
-            title:product.name,summary:<><span>{product.panel_name} · {product.plan_id}</span><div>{formatToman(product.price_per_gb)} / گیگ · {formatToman(product.price_per_day)} / روز</div></>,aside:badge,action};
+            title:product.name,summary:<><span>{product.panel_name} · {product.plan_id}</span><div><bdi dir="ltr">{product.email_domain}</bdi></div><div>{formatToman(product.price_per_gb)} / گیگ · {formatToman(product.price_per_day)} / روز</div></>,aside:badge,action};
         })}/>}
   </div>;
 }
