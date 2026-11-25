@@ -17,7 +17,7 @@ sudo bash ./partnerconsole.sh install --from-archive ./partnerconsole-v1.0.13.ta
 
 ## ارتقای مستقیم
 
-پیش از ارتقا، نسخهٔ پشتیبان داده و تنظیمات نصب را طبق [راهنمای پشتیبان‌گیری](../../../../README.md#backup-and-restore) تهیه کنید. سپس در همان پوشه اجرا کنید.
+پیش از ارتقا، نسخهٔ پشتیبان داده و تنظیمات نصب را طبق بخش «Backup & Restore» در [راهنمای مخزن](../../../../README.md) تهیه کنید. سپس در همان پوشه اجرا کنید.
 
 ```bash
 sha256sum --check --strict SHA256SUMS
