@@ -1215,7 +1215,8 @@ setup_app() (
         PP_RENDER_ONLY=1 PP_ROOT="$APP_ROOT" run_root_script "$APP_ROOT/scripts/render-host-templates.sh" "$APP_USER" || return 1
       fi
       admin_password="$(ask_admin_password)" || return 1
-      runuser -u "$APP_USER" -- env ADMIN_PASSWORD="$admin_password" bash "$APP_ROOT/scripts/bootstrap.sh" --confirm-database
+      builtin printf '%s\n' "$admin_password" |
+        runuser -u "$APP_USER" -- bash "$APP_ROOT/scripts/bootstrap.sh" --confirm-database --password-stdin
       unset admin_password
       ;;
     *) die "Could not check administrator initialization. Check the local MySQL service and rerun Install." ;;

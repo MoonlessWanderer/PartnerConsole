@@ -46,9 +46,25 @@ if b"\0" in data:
     raise SystemExit(0)
 text = data.decode("utf-8", "replace")
 pattern = re.compile(
-    r"(?i)(into\s+(outfile|dumpfile)|load\s+data|load_file\s*\(|^\s*system\s|^\s*source\s|"
+    r"(?im)(into\s+(outfile|dumpfile)|load\s+data|load_file\s*\(|^\s*system\s|^\s*source\s|"
     r"create\s+user|drop\s+database|create\s+database|\bgrant\s|\brevoke\s|set\s+global)"
 )
+# mysqldump writes extended INSERT statements as single lines. Only skip text in
+# literal-only VALUES rows, leaving all other statements and comments visible.
+insert = re.compile(r"^INSERT INTO `[A-Za-z0-9_]+` VALUES (.+);$")
+quoted = re.compile(r"'(?:[^'\\]|\\.|'')*'")
+scalar = r"(?:NULL|0x[0-9A-Fa-f]+|[+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)"
+row = rf"\({scalar}(?:,{scalar})*\)"
+literal_rows = re.compile(rf"{row}(?:,{row})*")
+if "NO_BACKSLASH_ESCAPES" not in text.upper():
+    lines = []
+    for line in text.split("\n"):
+        match = insert.fullmatch(line)
+        if match and literal_rows.fullmatch(quoted.sub("NULL", match[1])):
+            lines.append("INSERT VALUES;")
+        else:
+            lines.append(line)
+    text = "\n".join(lines)
 raise SystemExit(0 if pattern.search(text) else 1)
 PY
 }
@@ -383,7 +399,7 @@ pp_backup_trial_import() {
     pp_backup_trial_close
     return 1
   fi
-  if ! pp_backup_client_mysql --defaults-extra-file="$cnf" partnerconsole_restore_check < "$file"; then
+  if ! pp_backup_client_mysql --defaults-extra-file="$cnf" --binary-mode --local-infile=0 partnerconsole_restore_check < "$file"; then
     echo "The trial import did not finish. The main database was not changed by this command." >&2
     pp_backup_trial_close
     return 1
@@ -478,8 +494,8 @@ PY
       return 1
     }
   fi
-  mysql --defaults-extra-file="$cnf" "$database" < "$file"
-  local status=$?
+  local status=0
+  mysql --defaults-extra-file="$cnf" --binary-mode --local-infile=0 "$database" < "$file" || status=$?
   rm -f "$cnf"
   return "$status"
 }

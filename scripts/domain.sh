@@ -566,6 +566,8 @@ pp_domain_build_web() {
       echo "NEXT_PUBLIC_API_BASE in config/web.env is not ${origin:-the HTTPS origin}. The web app was not built." >&2
       exit 1
     fi
+    pp_prepare_runtime || return 1
+    pp_prepare_web_build || return 1
     cd "$PP_ROOT" && npm run build --prefix "$PP_ROOT"
   )
 }

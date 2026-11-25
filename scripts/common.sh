@@ -15,55 +15,82 @@ if [[ "$PP_ROOT" == *" "* || "$PP_ROOT" == *$'\n'* || "$PP_ROOT" == *$'\r'* ]]; 
   return 1 2>/dev/null || exit 1
 fi
 
+pp_assert_root_directory() {
+  local directory="$1" owner mode
+  if [[ -d "$directory" && ! -L "$directory" ]] &&
+    read -r owner mode < <(stat -c '%u %a' -- "$directory") &&
+    [[ "$owner" == 0 && "$mode" =~ ^[0-7]{3,4}$ ]] && (( (8#$mode & 022) == 0 )); then
+    return 0
+  fi
+  echo "Refusing an unsafe root maintenance directory: $directory" >&2
+  return 1
+}
+
 pp_prepare_runtime() {
+  local runtime_dir="$PP_ROOT/runtime" private_dir env_file
+  local -a private_dirs
   umask 077
-  mkdir -p \
-    "$PP_ROOT/config" \
-    "$PP_ROOT/data" \
-    "$PP_ROOT/logs" \
-    "$PP_ROOT/backups" \
-    "$PP_ROOT/runtime/tmp" \
-    "$PP_ROOT/runtime/cache/pip" \
-    "$PP_ROOT/runtime/cache/npm" \
-    "$PP_ROOT/runtime/cache/xdg" \
-    "$PP_ROOT/runtime/cache/pyc" \
-    "$PP_ROOT/runtime/pids"
+  if [[ "$EUID" -eq 0 ]]; then
+    # Root package builds and maintenance must never use caches written by ppv1.
+    pp_assert_root_directory "$PP_ROOT" || return 1
+    runtime_dir="$PP_ROOT/.release/maintenance"
+    for private_dir in "$PP_ROOT/.release" "$runtime_dir"; do
+      if [[ ! -e "$private_dir" && ! -L "$private_dir" ]]; then
+        mkdir -m 700 -- "$private_dir" || return 1
+      fi
+      pp_assert_root_directory "$private_dir" || return 1
+      chmod 700 -- "$private_dir" || return 1
+    done
+    mkdir -p "$PP_ROOT/config" "$PP_ROOT/backups" || return 1
+    for private_dir in "$PP_ROOT/config" "$PP_ROOT/backups"; do
+      pp_assert_root_directory "$private_dir" || return 1
+    done
+    if [[ ! -e "$PP_ROOT/runtime" && ! -L "$PP_ROOT/runtime" ]]; then
+      mkdir -p "$PP_ROOT/runtime/pids" "$PP_ROOT/data" "$PP_ROOT/logs" || return 1
+    fi
+    private_dirs=("$PP_ROOT/backups")
+  else
+    mkdir -p "$PP_ROOT/config" "$PP_ROOT/data" "$PP_ROOT/logs" "$PP_ROOT/backups" \
+      "$runtime_dir/pids" || return 1
+    private_dirs=("$PP_ROOT/data" "$PP_ROOT/logs" "$PP_ROOT/backups" "$runtime_dir/pids")
+  fi
+  mkdir -p "$runtime_dir/tmp" "$runtime_dir/cache/pip" "$runtime_dir/cache/npm" \
+    "$runtime_dir/cache/xdg" "$runtime_dir/cache/pyc" || return 1
   # Tighten private directories owned by this user. Config stays group-readable
   # so ppv1 can start after a root backup, but ppv1 still cannot write it.
-  local private_dir env_file
-  for private_dir in \
-    "$PP_ROOT/data" \
-    "$PP_ROOT/logs" \
-    "$PP_ROOT/backups" \
-    "$PP_ROOT/runtime" \
-    "$PP_ROOT/runtime/tmp" \
-    "$PP_ROOT/runtime/cache" \
-    "$PP_ROOT/runtime/pids"
-  do
-    if [[ -O "$private_dir" ]]; then
+  for private_dir in "${private_dirs[@]}" "$runtime_dir" "$runtime_dir/tmp" "$runtime_dir/cache"; do
+    if [[ -O "$private_dir" && ! -L "$private_dir" ]]; then
       chmod 700 "$private_dir"
     fi
   done
-  if [[ "$(id -u)" -eq 0 && -O "$PP_ROOT/config" ]]; then
+  if [[ "$EUID" -eq 0 ]]; then
     chmod 750 "$PP_ROOT/config"
     for env_file in "$PP_ROOT/config/api.env" "$PP_ROOT/config/web.env"; do
-      if [[ -f "$env_file" && -O "$env_file" ]]; then
+      if [[ -f "$env_file" && -O "$env_file" && ! -L "$env_file" ]]; then
         chmod 640 "$env_file"
       fi
     done
   fi
-  export TMPDIR="$PP_ROOT/runtime/tmp"
+  export TMPDIR="$runtime_dir/tmp"
   export TMP="$TMPDIR"
   export TEMP="$TMPDIR"
-  export XDG_CACHE_HOME="$PP_ROOT/runtime/cache/xdg"
+  export XDG_CACHE_HOME="$runtime_dir/cache/xdg"
   export XDG_CONFIG_HOME="$PP_ROOT/config"
-  export PIP_CACHE_DIR="$PP_ROOT/runtime/cache/pip"
+  export PIP_CACHE_DIR="$runtime_dir/cache/pip"
   export PIP_DISABLE_PIP_VERSION_CHECK=1
-  export npm_config_cache="$PP_ROOT/runtime/cache/npm"
-  export NPM_CONFIG_CACHE="$PP_ROOT/runtime/cache/npm"
-  export npm_config_tmp="$PP_ROOT/runtime/tmp"
-  export PYTHONPYCACHEPREFIX="$PP_ROOT/runtime/cache/pyc"
+  export npm_config_cache="$runtime_dir/cache/npm"
+  export NPM_CONFIG_CACHE="$runtime_dir/cache/npm"
+  export npm_config_tmp="$runtime_dir/tmp"
+  export PYTHONPYCACHEPREFIX="$runtime_dir/cache/pyc"
   export NEXT_TELEMETRY_DISABLED=1
+}
+
+pp_prepare_web_build() {
+  local output="$PP_ROOT/.next"
+  if [[ "$EUID" -eq 0 && ( -e "$output" || -L "$output" ) ]]; then
+    pp_assert_root_directory "$output" || return 1
+    rm -rf -- "$output/cache"
+  fi
 }
 
 pp_process_belongs_to_install() {

@@ -110,14 +110,12 @@ runuser -u ppv1 -- bash /srv/partnerconsole/scripts/bootstrap.sh
 The second command omits `--confirm-database` and should exit with a nonzero status without creating any tables. Review the database name that it prints. Continue only if it is the dedicated, empty schema you intend to initialize.
 
 ```bash
-runuser -u ppv1 -- env ADMIN_PASSWORD='REPLACE_WITH_INITIAL_ADMIN_PASSWORD' \
-  bash /srv/partnerconsole/scripts/bootstrap.sh --confirm-database
-unset ADMIN_PASSWORD
+runuser -u ppv1 -- bash /srv/partnerconsole/scripts/bootstrap.sh --confirm-database
 runuser -u ppv1 -- bash /srv/partnerconsole/start.sh
 runuser -u ppv1 -- bash /srv/partnerconsole/status.sh
 ```
 
-Use an initial password of at least 12 characters and do not use `admin12345`. The environment assignment supplies the password to that bootstrap process. Production workers do not run migrations on startup. The expected Alembic head is `0005_security_state`.
+Enter and confirm a unique password of at least 12 characters at the hidden bootstrap prompts. Production workers do not run migrations on startup. The expected Alembic head is `0005_security_state`.
 
 Verify the services from the server itself.
 

@@ -79,6 +79,7 @@ if [[ "$(tr -d '\r' < "$PP_ROOT/config/web.env")" == *"REPLACE_WITH"* || "$(tr -
   echo "Web build skipped. Set NEXT_PUBLIC_API_BASE in config/web.env, then run bash install.sh again."
 else
   pp_load_env_file "$PP_ROOT/config/web.env"
+  pp_prepare_web_build
   npm run build --prefix "$PP_ROOT"
 fi
 
