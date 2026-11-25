@@ -19,6 +19,7 @@ export type Operation = {
   charge_days_from_credit: number | null;
   gb_back: string | null;
   days_back: number | null;
+  refund_state?: "reserved" | "credited" | "voided" | null;
   old_cap_gb: string | null;
   new_cap_gb: string | null;
   panel_applied: boolean;
@@ -96,6 +97,13 @@ export function hasShortfall(op: Pick<Operation, "shortfall_gb" | "shortfall_day
   return Number(op.shortfall_gb || 0) > 0 || Number(op.shortfall_days || 0) > 0;
 }
 
+export function refundLabel(state: Operation["refund_state"]): string {
+  if (state === "reserved") return "اعتبار رزروشده";
+  if (state === "voided") return "رزرو لغوشده";
+  if (state === "credited") return "اعتبار افزوده‌شده";
+  return "اعتبار برگشتی";
+}
+
 export function canResolve(op: Pick<Operation, "status" | "busy">): boolean {
   return op.status === "attention" && !op.busy;
 }
@@ -129,8 +137,9 @@ const RETRY_LABEL: Record<Exclude<RetryAction, null>, string> = {
 };
 
 /** Distinct from the modal's own close button ("بستن پنجره"). */
-export function decisionLabel(op: Pick<Operation, "retry_action">, decision: Decision): string {
+export function decisionLabel(op: Pick<Operation, "retry_action" | "refund_state">, decision: Decision): string {
   if (decision === "close") return "بستن عملیات بدون جابه‌جایی مالی";
+  if (op.refund_state === "reserved" && op.retry_action === "resend_change") return "پیگیری تغییر در پنل";
   return op.retry_action ? RETRY_LABEL[op.retry_action] : "تلاش دوباره";
 }
 
@@ -147,6 +156,13 @@ export function effects(op: Operation, decision: Decision): Effects {
   const noLedger = "ردیف جدیدی ثبت نمی‌شود؛ فقط تصمیم و توضیح شما روی همین عملیات ذخیره می‌شود.";
   const noPanel = "هیچ درخواستی به پنل فرستاده نمی‌شود.";
   if (decision === "close") {
+    if (op.refund_state === "reserved") {
+      return {
+        wallet: "رزرو همین عملیات لغو می‌شود. موجودی قابل مصرف تغییری نمی‌کند.",
+        ledger: noLedger,
+        panel: "وضعیت پنل بررسی می‌شود و تغییری برای پنل فرستاده نمی‌شود.",
+      };
+    }
     return {
       wallet: hasShortfall(op)
         ? `بدون تغییر. مانده ${fa(op.shortfall_gb || 0)} گیگ و ${fa(op.shortfall_days || 0)} روز دیگر پس گرفته نمی‌شود.`
@@ -160,6 +176,15 @@ export function effects(op: Operation, decision: Decision): Effects {
     return { wallet: `بدون تغییر. ${kept}`, ledger: noLedger, panel: "یک درخواست ریست (صفر کردن مصرف) برای همین کاربر فرستاده می‌شود." };
   }
   if (op.retry_action === "resend_change") {
+    if (op.refund_state === "reserved") {
+      return {
+        wallet: "اعتبار رزروشده فقط پس از تأیید نتیجهٔ پنل به موجودی قابل مصرف همین محصول افزوده می‌شود.",
+        ledger: "پس از تأیید پنل، برای گیگ و روز برگشتیِ بیشتر از صفر ردیف جداگانه ثبت می‌شود.",
+        panel: op.kind === "delete"
+          ? "وضعیت همان کاربر بررسی می‌شود و در صورت نیاز حذف دوباره درخواست می‌شود."
+          : "سقف و تاریخ پایان پنل بررسی می‌شوند و در صورت نیاز تغییر دوباره درخواست می‌شود.",
+      };
+    }
     const panel = op.kind === "delete"
       ? "یک درخواست حذف همین کاربر فرستاده می‌شود."
       : `یک درخواست ویرایش فرستاده می‌شود که سقف را ${op.new_cap_gb ? `${fa(op.new_cap_gb)} گیگ` : "مقدار ثبت‌شده"} و تاریخ را مقدار ثبت‌شده می‌کند.`;
@@ -175,6 +200,12 @@ export function effects(op: Operation, decision: Decision): Effects {
 /** What the decision does, in the words shown to the admin before confirming. */
 export function explain(op: Operation, decision: Decision): { summary: string; warning: string } {
   if (decision === "close") {
+    if (op.refund_state === "reserved") {
+      return {
+        summary: "عملیات بسته و رزرو اعتبار آن لغو می‌شود.",
+        warning: "موجودی قابل مصرف همکار تغییری نمی‌کند. وضعیت پنل پیش از بستن دوباره بررسی می‌شود.",
+      };
+    }
     if (hasShortfall(op)) {
       return {
         summary: "عملیات بسته می‌شود و اختلاف باقی‌مانده به‌عنوان پذیرفته‌شده ثبت می‌شود.",
@@ -190,6 +221,14 @@ export function explain(op: Operation, decision: Decision): { summary: string; w
     return {
       summary: "ریست ترافیک یک بار دیگر به پنل فرستاده می‌شود و با همان هزینهٔ قبلی تکمیل می‌شود.",
       warning: "کاهش مصرف ثابت نمی‌کند ریست قبلی انجام شده یا نه؛ ریست دستی ادمین پنل یا ریست زمان‌بندی‌شدهٔ پلن هم همین اثر را دارد. فقط اگر در پنل مطمئن شدید ریست قبلی انجام نشده تأیید کنید؛ در غیر این صورت مصرف کاربر دوباره صفر می‌شود.",
+    };
+  }
+  if (op.retry_action === "resend_change" && op.refund_state === "reserved") {
+    return {
+      summary: "نتیجهٔ پنل بررسی می‌شود. پس از تأیید، اعتبار رزروشدهٔ همین عملیات آزاد می‌شود.",
+      warning: op.kind === "delete"
+        ? "اگر کاربر هنوز روی پنل باشد، مالکیت او پیش از درخواست دوبارهٔ حذف بررسی می‌شود."
+        : "مقدار قبلی پنل ثابت نمی‌کند درخواست پیشین اجرا نشده است. تغییرات هم‌زمان را پیش از تأیید بررسی کنید.",
     };
   }
   if (op.retry_action === "resend_change" && op.kind === "delete") {

@@ -951,6 +951,7 @@ def test_mysql_two_increases_on_one_subscription_repeatedly(new_schema, engines,
 # ---------------------------------------------------------------- database failure after the panel applied a change
 
 AFTER_PANEL_KINDS = ["create", "increase", "decrease", "reset", "delete"]
+REFUND_KINDS = {"decrease", "delete"}
 
 
 def _after_panel_setup(sessions, sim, kind):
@@ -991,7 +992,7 @@ def _after_panel_money(sessions, pid, product_id):
         credit = db.scalar(select(PartnerProductCredit).where(PartnerProductCredit.partner_id == pid,
                                                               PartnerProductCredit.product_id == product_id))
         return (int(db.get(Partner, pid).balance_toman),
-                (str(credit.credit_gb), int(credit.credit_days)) if credit else None,
+                (Decimal(credit.credit_gb), int(credit.credit_days)) if credit else (Decimal(0), 0),
                 len(db.scalars(select(WalletLedger).where(WalletLedger.partner_id == pid,
                                                           WalletLedger.reason == "operation_rollback")).all()))
 
@@ -1048,7 +1049,18 @@ def _expected_mutations(kind):
 
 def _assert_after_panel(sessions, sim, kind, v2_id, op_id, start, money, pid, product_id, status="completed"):
     with sessions() as db:
-        assert db.get(PanelOperation, op_id).status == status
+        op = db.get(PanelOperation, op_id)
+        assert op.status == status
+        if kind in REFUND_KINDS:
+            data = json.loads(op.payload)
+            gb, days = Decimal(data["gb_back"]), int(data["days_back"])
+            reason = "decrease" if kind == "decrease" else "delete_refund"
+            ledger = db.execute(select(WalletLedger.asset, WalletLedger.amount).where(
+                WalletLedger.partner_id == pid, WalletLedger.reason == reason,
+            )).all()
+            assert sorted(ledger) == sorted((asset, amount) for asset, amount in (("gb", gb), ("days", days)) if amount)
+            toman, (have_gb, have_days), rollbacks = money
+            money = toman, (have_gb + gb, have_days + days), rollbacks
     assert _after_panel_money(sessions, pid, product_id) == money
     assert money[2] == 0
     assert tuple(a - b for a, b in zip(_mutations(sim), start)) == _expected_mutations(kind)
@@ -1079,6 +1091,7 @@ def test_mysql_killed_connections_after_panel_success_refund_nothing(new_schema,
     sessions = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
     sim = PanelSim()
     pid, sub_id, v2_id, product_id = _after_panel_setup(sessions, sim, kind)
+    before = _after_panel_money(sessions, pid, product_id)
     start = _mutations(sim)
 
     def kill_all():
@@ -1107,13 +1120,16 @@ def test_mysql_killed_connections_after_panel_success_refund_nothing(new_schema,
         assert failure is not None and failure.status_code == 503
         assert failure.message == money_sync.DB_UNAVAILABLE.format(id=op_id)
         assert status == "pending" and lease is not None
+        if kind in REFUND_KINDS:
+            assert money == before
         sessions = _restart_and_finish(url, engines, sim, op_id, kind)
         settled = _unrecorded(kind)
     else:
         # pool_pre_ping replaces the killed connection before the checkpoint is written.
         assert failure is None and status == "completed"
         settled = "completed"
-    _assert_after_panel(sessions, sim, kind, v2_id, op_id, start, money, pid, product_id, settled)
+    _assert_after_panel(sessions, sim, kind, v2_id, op_id, start,
+                        before if kind in REFUND_KINDS else money, pid, product_id, settled)
 
 
 @pytest.mark.parametrize("kind", AFTER_PANEL_KINDS)
@@ -1130,6 +1146,7 @@ def test_mysql_lock_wait_on_checkpoint_after_panel_success_refunds_nothing(new_s
     sessions = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
     sim = PanelSim()
     pid, sub_id, v2_id, product_id = _after_panel_setup(sessions, sim, kind)
+    before = _after_panel_money(sessions, pid, product_id)
     start = _mutations(sim)
     blocker = blocker_engine.raw_connection()
     errors = []
@@ -1164,17 +1181,20 @@ def test_mysql_lock_wait_on_checkpoint_after_panel_success_refunds_nothing(new_s
     assert status == "pending" and lease is not None  # not even the error could be saved
     money = _after_panel_money(sessions, pid, product_id)
     assert money[2] == 0
+    if kind in REFUND_KINDS:
+        assert money == before
     fresh = _restart_and_finish(url, engines, sim, op_id, kind)
     _assert_after_panel(fresh, sim, kind, v2_id, op_id, start, money, pid, product_id, _unrecorded(kind))
 
 
 @pytest.mark.parametrize("kind", AFTER_PANEL_KINDS)
 def test_mysql_proxy_error_then_late_landing_refunds_nothing(new_schema, engines, kind):
-    """A 504 from a proxy while the panel still runs the request: no refund, no second send."""
+    """A 504 while the panel still runs the request leaves the refund held until confirmation."""
     url = new_schema()
     sessions = sessionmaker(bind=engines(url), autoflush=False, expire_on_commit=False)
     sim = PanelSim()
     pid, sub_id, v2_id, product_id = _after_panel_setup(sessions, sim, kind)
+    before = _after_panel_money(sessions, pid, product_id)
     start = _mutations(sim)
     path = {"create": "/user/generate", "delete": "/user/delUser"}.get(kind, "/user/update")
     held = []
@@ -1194,6 +1214,8 @@ def test_mysql_proxy_error_then_late_landing_refunds_nothing(new_schema, engines
     op_id, status, _lease, _payload = _latest_op(sessions, kind)
     money = _after_panel_money(sessions, pid, product_id)
     assert money[2] == 0
+    if kind in REFUND_KINDS:
+        assert money == before
     sim.handler(held[0])  # the panel finishes the request after recovery already read it
     if kind in {"reset", "increase", "decrease"}:
         # Possibly sent and not visible yet: held for the admin, nothing refunded or resent.
@@ -1204,6 +1226,12 @@ def test_mysql_proxy_error_then_late_landing_refunds_nothing(new_schema, engines
             assert reconcile_pending(db, lambda _panel: gateway(sim)) == 0
         assert tuple(a - b for a, b in zip(_mutations(sim), start)) == _expected_mutations(kind)
         assert _after_panel_money(sessions, pid, product_id) == money
+        if kind == "decrease":
+            with sessions() as db:
+                money_sync.resolve_attention(db, op_id, decision="retry", actor=Actor("admin", 1),
+                                             note="نتیجه پنل مشاهده شد", gateway_factory=lambda _panel: gateway(sim))
+            fresh = _restart_and_finish(url, engines, sim, op_id)
+            _assert_after_panel(fresh, sim, kind, v2_id, op_id, start, money, pid, product_id)
         return
     assert caught.value.status_code == 503 and status == "pending"
     fresh = _restart_and_finish(url, engines, sim, op_id)
@@ -1216,6 +1244,7 @@ def test_mysql_crash_after_panel_success_recovers_once_after_restart(new_schema,
     sessions = sessionmaker(bind=engines(url), autoflush=False, expire_on_commit=False)
     sim = PanelSim()
     pid, sub_id, v2_id, product_id = _after_panel_setup(sessions, sim, kind)
+    before = _after_panel_money(sessions, pid, product_id)
     start = _mutations(sim)
 
     def crash():
@@ -1230,9 +1259,69 @@ def test_mysql_crash_after_panel_success_recovers_once_after_restart(new_schema,
     assert status == "pending" and lease is not None
     assert '"panel_applied": true' not in payload
     money = _after_panel_money(sessions, pid, product_id)
+    if kind in REFUND_KINDS:
+        assert money == before
     with sessions() as db:
         # The lease is still live: a recovery run must not touch the row yet.
         assert reconcile_pending(db, lambda _panel: gateway(sim)) == 0
     assert tuple(a - b for a, b in zip(_mutations(sim), start)) == _expected_mutations(kind)
     fresh = _restart_and_finish(url, engines, sim, op_id, kind)
     _assert_after_panel(fresh, sim, kind, v2_id, op_id, start, money, pid, product_id, _unrecorded(kind))
+
+
+@pytest.mark.parametrize("kind", sorted(REFUND_KINDS))
+def test_mysql_refund_lease_takeover_keeps_staged_credit_invisible_and_posts_once(new_schema, engines, monkeypatch, kind):
+    sessions = sessionmaker(bind=engines(new_schema()), autoflush=False, expire_on_commit=False)
+    sim = PanelSim()
+    pid, sub_id, v2_id, product_id = _after_panel_setup(sessions, sim, kind)
+    before = _after_panel_money(sessions, pid, product_id)
+    start = _mutations(sim)
+    staged, claimed, release = threading.Event(), threading.Event(), threading.Event()
+    real_settle = money_sync._settle_refund
+
+    def settle(db, op, data):
+        if staged.is_set():
+            claimed.set()
+            real_settle(db, op, data)
+            return
+        real_settle(db, op, data)
+        db.flush()
+        staged.set()
+        assert release.wait(15), "first worker timed out waiting for lease takeover"
+
+    monkeypatch.setattr(money_sync, "_settle_refund", settle)
+
+    def open_refund():
+        with sessions() as db, gateway(sim) as client:
+            with pytest.raises(money_sync.AppError) as caught:
+                _after_panel_run(kind, db, client, pid, sub_id, product_id)
+            assert caught.value.status_code == 503
+
+    def resume_refund(op_id):
+        with sessions() as db, gateway(sim) as client:
+            money_sync.drive_operation(db, db.get(PanelOperation, op_id), client)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(open_refund)
+        try:
+            assert staged.wait(15), "first worker did not stage the refund"
+            op_id, status, lease, payload = _latest_op(sessions, kind)
+            assert status == "pending" and lease and json.loads(payload)["panel_applied"]
+            assert _after_panel_money(sessions, pid, product_id) == before
+            with sessions() as db:
+                assert db.scalars(select(WalletLedger).where(
+                    WalletLedger.partner_id == pid, WalletLedger.reason.in_(("decrease", "delete_refund")),
+                )).first() is None
+                db.execute(text("UPDATE panel_operations SET lease_until = 1 WHERE id = :id"), {"id": op_id})
+                db.commit()
+            second = pool.submit(resume_refund, op_id)
+            assert claimed.wait(15), "second worker did not take the expired lease"
+        finally:
+            release.set()
+        first.result(timeout=15)
+        second.result(timeout=15)
+    _assert_after_panel(sessions, sim, kind, v2_id, op_id, start, before, pid, product_id)
+    with sessions() as db:
+        assert reconcile_pending(db, lambda _panel: gateway(sim)) == 0
+        assert (db.get(Subscription, sub_id) is None) == (kind == "delete")
+    _assert_after_panel(sessions, sim, kind, v2_id, op_id, start, before, pid, product_id)

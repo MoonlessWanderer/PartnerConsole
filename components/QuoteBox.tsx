@@ -17,7 +17,7 @@ export function QuoteBox({ quote }: { quote: Quote | null }) {
     ["سهم کیف پول", <>{formatGb(quote.gb_paid)} و {formatDays(quote.days_paid)}</>],
   ];
   if (Number(quote.gb_refund) > 0 || quote.days_refund > 0) {
-    rows.push(["برگشت به اعتبار", <>{formatGb(quote.gb_refund)} و {formatDays(quote.days_refund)}</>]);
+    rows.push(["برگشت پس از تأیید پنل", <>{formatGb(quote.gb_refund)} و {formatDays(quote.days_refund)}</>]);
   }
   if (quote.used_gb) rows.push(["مصرف فعلی", formatGb(quote.used_gb)]);
 

@@ -84,7 +84,7 @@ def _money(db, partner_id, product_id):
     credit = db.scalar(select(PartnerProductCredit).where(PartnerProductCredit.partner_id == partner_id,
                                                           PartnerProductCredit.product_id == product_id))
     db.rollback()
-    return int(balance), (str(credit.credit_gb), int(credit.credit_days)) if credit else None
+    return int(balance), (Decimal(credit.credit_gb), int(credit.credit_days)) if credit else (Decimal(0), 0)
 
 
 def _rollbacks(db) -> int:
@@ -175,11 +175,25 @@ def _settled(kind):
     return "attention" if kind == "reset" else "completed"
 
 
+def _after_refund(db, op, kind, money):
+    if kind not in {"decrease", "delete"}:
+        return money
+    data = json.loads(op.payload)
+    gb, days = Decimal(data["gb_back"]), int(data["days_back"])
+    reason = "decrease" if kind == "decrease" else "delete_refund"
+    ledger = db.execute(select(WalletLedger.asset, WalletLedger.amount).where(
+        WalletLedger.partner_id == op.partner_id, WalletLedger.reason == reason,
+    )).all()
+    assert sorted(ledger) == sorted((asset, amount) for asset, amount in (("gb", gb), ("days", days)) if amount)
+    toman, (have_gb, have_days) = money
+    return toman, (have_gb + gb, have_days + days)
+
+
 def _assert_no_replay(db, sim, kind, partner_id, product_id, start, expected, landed, money):
     op = _op(db, kind)
     assert op.status == _settled(kind), op.last_error
     assert _rollbacks(db) == 0
-    assert _money(db, partner_id, product_id) == money
+    assert _money(db, partner_id, product_id) == _after_refund(db, op, kind, money)
     done = _mutations(sim)
     assert tuple(after - before for after, before in zip(done, start)) == expected
     assert landed()
@@ -189,6 +203,7 @@ def _assert_no_replay(db, sim, kind, partner_id, product_id, start, expected, la
 @pytest.mark.parametrize("kind", KINDS)
 def test_checkpoint_failure_after_panel_success_keeps_money_and_recovers_once(db, sim, monkeypatch, kind, failure):
     partner_id, product_id, run, expected, landed = _prepare(db, sim, kind)
+    before = _money(db, partner_id, product_id)
     start = _mutations(sim)
     fail = _FailCheckpoint(monkeypatch, FAILURES[failure]())
     if failure == "unexpected":
@@ -212,14 +227,18 @@ def test_checkpoint_failure_after_panel_success_keeps_money_and_recovers_once(db
         assert not data.get("panel_applied")
         assert _rollbacks(db) == 0
         charged = _money(db, partner_id, product_id)
+        if kind in {"decrease", "delete"}:
+            assert charged == before
         monkeypatch.undo()
         assert _restart_and_reconcile(db, sim) == (kind != "reset")
-    _assert_no_replay(db, sim, kind, partner_id, product_id, start, expected, landed, charged)
+    _assert_no_replay(db, sim, kind, partner_id, product_id, start, expected, landed,
+                      before if kind in {"decrease", "delete"} else charged)
 
 
 @pytest.mark.parametrize("kind", KINDS)
 def test_database_down_after_panel_success_moves_no_money(db, sim, monkeypatch, kind):
     partner_id, product_id, run, expected, landed = _prepare(db, sim, kind)
+    before = _money(db, partner_id, product_id)
     start = _mutations(sim)
     _FailCheckpoint(monkeypatch, _db_error(2013), outage=10)
     with pytest.raises(AppError) as caught:
@@ -232,6 +251,8 @@ def test_database_down_after_panel_success_moves_no_money(db, sim, monkeypatch, 
     assert op.status == "pending" and op.lease_token is not None
     assert _rollbacks(db) == 0
     charged = _money(db, partner_id, product_id)
+    if kind in {"decrease", "delete"}:
+        assert charged == before
     assert _restart_and_reconcile(db, sim) == 0
     _expire_lease(db, op.id)
     assert _restart_and_reconcile(db, sim) == (kind != "reset")
@@ -241,6 +262,7 @@ def test_database_down_after_panel_success_moves_no_money(db, sim, monkeypatch, 
 @pytest.mark.parametrize("kind", KINDS)
 def test_crash_between_panel_success_and_checkpoint_recovers_after_restart(db, sim, monkeypatch, kind):
     partner_id, product_id, run, expected, landed = _prepare(db, sim, kind)
+    before = _money(db, partner_id, product_id)
     start = _mutations(sim)
     _FailCheckpoint(monkeypatch, SystemExit("worker killed"))
     with pytest.raises(SystemExit):
@@ -249,6 +271,8 @@ def test_crash_between_panel_success_and_checkpoint_recovers_after_restart(db, s
     db.rollback()
     assert landed()
     charged = _money(db, partner_id, product_id)
+    if kind in {"decrease", "delete"}:
+        assert charged == before
     op = _op(db, kind)
     assert op.status == "pending"
     _expire_lease(db, op.id)
@@ -279,11 +303,13 @@ def test_sent_change_with_unexplained_panel_state_waits_for_admin(db, sim, monke
     assert _restart_and_reconcile(db, sim) == 0
     assert _mutations(sim) == tuple(a + b for a, b in zip(start, expected))
     # The admin checked the panel and asked for one more send.
-    resolve_attention(db, op.id, decision="retry", actor=Actor("admin", 1), note="پنل بررسی شد")
+    resolve_attention(db, op.id, decision="retry", actor=Actor("admin", 1), note="پنل بررسی شد",
+                      gateway_factory=lambda _panel: gateway(sim))
     assert _restart_and_reconcile(db, sim) == 1
     assert _op(db, kind).status == "completed"
     assert landed()
-    assert _money(db, partner_id, product_id) == charged and _rollbacks(db) == 0
+    assert _money(db, partner_id, product_id) == _after_refund(db, _op(db, kind), kind, charged)
+    assert _rollbacks(db) == 0
     updates = _mutations(sim)[0] - start[0]
     assert updates == expected[0] + 1
 

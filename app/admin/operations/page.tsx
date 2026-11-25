@@ -23,6 +23,7 @@ import {
   explain,
   formProblem,
   hasShortfall,
+  refundLabel,
   resolveBody,
   shownError,
   statusTone,
@@ -78,7 +79,7 @@ function Amounts({ op }: { op: Operation }) {
   if (op.charge_toman) rows.push(["هزینهٔ گرفته‌شده", formatToman(op.charge_toman)]);
   if (Number(op.charge_gb_from_credit || 0) > 0) rows.push(["از اعتبار گیگ", formatGb(op.charge_gb_from_credit)]);
   if (Number(op.charge_days_from_credit || 0) > 0) rows.push(["از اعتبار روز", `${formatInt(op.charge_days_from_credit)} روز`]);
-  if (op.gb_back) rows.push(["اعتبار برگشتی", `${formatGb(op.gb_back)} و ${formatInt(op.days_back)} روز`]);
+  if (op.gb_back) rows.push([refundLabel(op.refund_state), `${formatGb(op.gb_back)} و ${formatInt(op.days_back)} روز`]);
   if (op.new_cap_gb) rows.push(["سقف", `${op.old_cap_gb ? `${formatGb(op.old_cap_gb)} ← ` : ""}${formatGb(op.new_cap_gb)}`]);
   rows.push(["ارسال به پنل", op.panel_applied ? "اعمال‌شده" : op.panel_sent ? "فرستاده شده، نتیجه نامعلوم" : "فرستاده نشده"]);
 
