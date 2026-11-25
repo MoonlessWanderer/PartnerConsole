@@ -24,11 +24,19 @@ export function DraftLeaveWarning({ dirty }: { dirty: boolean }) {
   const router = useRouter();
   const [destination, setDestination] = useState<Destination | null>(null);
   const permittedHistoryKey = useRef<string | null>(null);
+  const previousFocus = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     if (!dirty) return;
 
     const navigation = browserNavigation();
+
+    function warn(target: Destination) {
+      if (!previousFocus.current && document.activeElement instanceof HTMLElement) {
+        previousFocus.current = document.activeElement;
+      }
+      setDestination(target);
+    }
 
     function checkLink(event: MouseEvent) {
       if (event.defaultPrevented || event.button !== 0 || event.altKey || event.ctrlKey ||
@@ -39,7 +47,7 @@ export function DraftLeaveWarning({ dirty }: { dirty: boolean }) {
       if (url.origin !== location.origin || url.pathname === location.pathname) return;
       event.preventDefault();
       event.stopPropagation();
-      setDestination({ href: url.pathname + url.search + url.hash });
+      warn({ href: url.pathname + url.search + url.hash });
     }
 
     function protectDocument(event: BeforeUnloadEvent) {
@@ -57,7 +65,7 @@ export function DraftLeaveWarning({ dirty }: { dirty: boolean }) {
       if (!event.cancelable || new URL(target.url).pathname === location.pathname) return;
 
       event.preventDefault();
-      setDestination({ historyKey: target.key });
+      warn({ historyKey: target.key });
     }
 
     document.addEventListener("click", checkLink, true);
@@ -70,7 +78,17 @@ export function DraftLeaveWarning({ dirty }: { dirty: boolean }) {
     };
   }, [dirty]);
 
+  function keepEditing() {
+    const focus = previousFocus.current;
+    previousFocus.current = null;
+    setDestination(null);
+    requestAnimationFrame(() => {
+      if (focus?.isConnected) focus.focus();
+    });
+  }
+
   function discardDraft(target: Destination) {
+    previousFocus.current = null;
     setDestination(null);
     if ("href" in target) {
       router.push(target.href);
@@ -86,10 +104,10 @@ export function DraftLeaveWarning({ dirty }: { dirty: boolean }) {
 
   if (!dirty || !destination) return null;
   return (
-    <Modal title="خروج از فرم" onClose={() => setDestination(null)}>
+    <Modal title="خروج از فرم" onClose={keepEditing}>
       <p className="text-sm">با خروج از این صفحه، تغییرات ذخیره‌نشده از بین می‌روند.</p>
       <div className="pc-actions-row mt-4">
-        <Button onClick={() => setDestination(null)}>ادامهٔ ویرایش</Button>
+        <Button onClick={keepEditing}>ادامهٔ ویرایش</Button>
         <Button tone="danger" onClick={() => discardDraft(destination)}>خروج بدون ذخیره</Button>
       </div>
     </Modal>
