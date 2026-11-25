@@ -155,6 +155,19 @@ test("technical error texts are never shown raw", () => {
   assert.equal(attention.shownError(null), null);
 });
 
+test("operation details show a decision note once and preserve a distinct error", () => {
+  const note = "نتیجهٔ پنل آزمایشی بررسی شد.";
+  const completed = op({ status: "completed", resolution: "retry", resolution_note: note, last_error: ` ${note}\n` });
+  assert.equal(attention.operationDetailError(completed), null);
+  assert.equal(attention.operationDetailError({ ...completed, status: "closed", resolution: "close" }), null);
+  assert.equal(attention.operationDetailError({ ...completed, last_error: " \t" }), null);
+  assert.equal(attention.operationDetailError({ ...completed, resolution: null }), note);
+
+  const distinct = "پاسخ پنل قابل خواندن نیست.";
+  assert.equal(attention.operationDetailError({ ...completed, last_error: distinct }), distinct);
+  assert.equal(attention.operationDetailError({ ...completed, last_error: "upstream unavailable" }), attention.TECHNICAL_ERROR);
+});
+
 test("the decision carries the version the admin saw", () => {
   const seen = "2026-11-20T10:00:00+00:00";
   assert.equal(attention.resolveBody(op({ updated_at: seen }), ready).seen_updated_at, seen);

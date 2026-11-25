@@ -93,6 +93,12 @@ export function shownError(text: string | null): string | null {
   return /[\u0600-\u06FF]/.test(text) ? text : TECHNICAL_ERROR;
 }
 
+export function operationDetailError(op: Pick<Operation, "last_error" | "resolution" | "resolution_note">): string | null {
+  const error = op.last_error?.trim();
+  if (op.resolution && error === op.resolution_note?.trim()) return null;
+  return shownError(error || null);
+}
+
 export function hasShortfall(op: Pick<Operation, "shortfall_gb" | "shortfall_days">): boolean {
   return Number(op.shortfall_gb || 0) > 0 || Number(op.shortfall_days || 0) > 0;
 }

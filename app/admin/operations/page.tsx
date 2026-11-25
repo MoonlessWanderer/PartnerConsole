@@ -23,6 +23,7 @@ import {
   explain,
   formProblem,
   hasShortfall,
+  operationDetailError,
   refundLabel,
   resolveBody,
   shownError,
@@ -71,6 +72,7 @@ function EffectsView({ op, decision }: { op: Operation; decision: Decision }) {
 }
 
 function Amounts({ op }: { op: Operation }) {
+  const error = operationDetailError(op);
   const rows: Array<[string, ReactNode]> = [
     ["نوع", KIND_LABEL[op.kind] || op.kind],
     ["کاربر", <bdi dir="ltr">{op.username || "—"}</bdi>],
@@ -89,7 +91,7 @@ function Amounts({ op }: { op: Operation }) {
       {hasShortfall(op) ? (
         <Banner tone="warn">اختلاف مالی باقی‌مانده: {formatGb(op.shortfall_gb)} و {formatInt(op.shortfall_days)} روز</Banner>
       ) : null}
-      {op.last_error ? <Banner>{shownError(op.last_error)}</Banner> : null}
+      {error ? <Banner>{error}</Banner> : null}
       {op.resolution ? <div>تصمیم قبلی: {op.resolution === "close" ? "بستن عملیات" : "تلاش دوباره"} — {op.resolution_note || ""}</div> : null}
     </>
   );
