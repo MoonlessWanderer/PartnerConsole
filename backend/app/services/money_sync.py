@@ -1796,13 +1796,15 @@ def _resend_pending(op: PanelOperation, data: dict) -> bool:
 
 def _retry_kind(op: PanelOperation, data: dict) -> str | None:
     """What `retry` does for this attention row, mirroring resolve_attention."""
-    if op.status != "attention" or data.get("foreign_target"):
+    if op.status != "attention":
+        return None
+    if op.kind in {"decrease", "delete"} and _deferred_refund(data):
+        return "resend_change"
+    if data.get("foreign_target"):
         return None
     shortfall = "shortfall_gb" in data or "shortfall_days" in data
     if op.kind == "reset_traffic" and not data.get("panel_applied"):
         return "resend_reset"
-    if op.kind in {"decrease", "delete"} and _deferred_refund(data):
-        return "resend_change"
     if (op.kind in {"create", "increase", "decrease", "delete"} and _resend_pending(op, data)
             and not data.get("panel_applied") and not shortfall):
         return "resend_change"
@@ -2046,8 +2048,11 @@ def resolve_attention(
             _mark(db, op, data, "closed", AppError(cleaned or "توسط ادمین با دیدن اختلاف بسته شد"))
             return operation_view(_reload(db, op_id))
         if data.get("foreign_target"):
-            _save_owned(db, op.id, {}, release=True)
-            raise AppError("کاربر این شناسه در پنل متعلق به این اشتراک نیست؛ ارسال دوباره ممکن نیست و فقط بستن مجاز است.")
+            if not _deferred_refund(data):
+                _save_owned(db, op.id, {}, release=True)
+                raise AppError("کاربر این شناسه در پنل متعلق به این اشتراک نیست؛ ارسال دوباره ممکن نیست و فقط بستن مجاز است.")
+            # The fresh panel decision has established safe recovery (owned, deleted, or already confirmed).
+            data.pop("foreign_target")
         if op.kind == "reset_traffic" and not data.get("panel_applied"):
             # The admin checked the panel and saw no reset; the kept charge pays for the resend.
             data["reset_sent"] = False

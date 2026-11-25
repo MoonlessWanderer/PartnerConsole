@@ -1266,6 +1266,50 @@ def test_decrease_acknowledgement_without_verified_target_holds_refund(db, sim, 
             assert db.scalars(select(WalletLedger).where(WalletLedger.reason == "operation_rollback")).all() == []
 
 
+def test_marked_refund_attention_can_retry_after_verified_owner_returns(db, sim):
+    partner, product = seed(db)
+    with gateway(sim) as client:
+        sub, _, _ = create_subscription(
+            db, partner_id=partner.id, product_id=product.id, username="ali01", traffic_cap_gb=20,
+            end_date=jalali(date(2026, 6, 25)), note=None, actor=Actor("partner", partner.id),
+            gateway=client, now=NOW,
+        )
+        data = {
+            "refund_deferred": True, "foreign_target": True, "panel_sent": True, "panel_applied": False,
+            "actor_type": "partner", "actor_id": partner.id, "email_domain": sub.email_domain,
+            "plan_id": sub.plan_id, "v2_user_id": sub.v2_user_id, "subscription_id": sub.id,
+            "old_cap": "20", "new_cap": "15", "old_expired_at": sub.expired_at, "new_expired_at": sub.expired_at,
+            "gb_back": "5", "days_back": 0,
+        }
+        op = PanelOperation(partner_id=partner.id, product_id=product.id, subscription_id=sub.id,
+                            username=sub.username, kind="decrease", status="attention", payload=json.dumps(data))
+        sub.traffic_cap_gb = Decimal(15)
+        db.add(op)
+        db.commit()
+        user = sim.users[sub.v2_user_id]
+        owner = user["email"]
+        user.update(email="other-owner@gold.example.com", transfer_enable=15 * GB)
+
+        def panel_factory(_panel):
+            return gateway(sim)
+
+        with pytest.raises(AppError):
+            resolve_attention(db, op.id, decision="retry", actor=Actor("admin", 1),
+                              note="مالک تازه بررسی شد", gateway_factory=panel_factory)
+        db.rollback()
+        assert _credit_amounts(db) == (0, 0) and _refund_ledgers(db, "decrease") == []
+
+        user["email"] = owner
+        before = len(sim.updates)
+        pending = resolve_attention(db, op.id, decision="retry", actor=Actor("admin", 1),
+                                    note="مالک اصلی تأیید شد", gateway_factory=panel_factory)
+        assert pending["status"] == "pending"
+        assert reconcile_pending(db, panel_factory) == 1
+        assert reconcile_pending(db, panel_factory) == 0
+        assert len(sim.updates) == before and _credit_amounts(db) == (5, 0)
+        assert [(row.asset, row.amount) for row in _refund_ledgers(db, "decrease")] == [("gb", 5)]
+
+
 def test_decrease_attention_keeps_reservation_when_retry_is_refused_then_settles_late_confirmation(db, sim):
     partner, product = seed(db)
     with gateway(sim) as client:
