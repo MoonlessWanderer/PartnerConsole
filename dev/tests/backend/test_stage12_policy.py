@@ -19,8 +19,8 @@ from app.integrations.v2board import V2BoardClient
 from app.models import PanelOperation
 from app.services import money_sync
 from app.services.subscriptions import Actor
-from test_billing import GB, PanelSim, gateway
-from test_stage11_db_failure import _money, _mutations, _op, _prepare, _restart_and_reconcile, _rollbacks
+from test_billing import GB, PanelSim, _refund_ledgers, gateway
+from test_stage11_db_failure import _after_refund, _money, _mutations, _op, _prepare, _restart_and_reconcile, _rollbacks
 from test_stage11_reproductions import _ApplyThenFail, _make_sub, db  # noqa: F401
 from test_stage12_recovery_audit import GATEWAY_ERRORS, LateLanding, _Lose, _reset_setup
 
@@ -178,21 +178,26 @@ def test_change_landed_then_reverted_by_an_admin_is_held_not_resent(db, sim, kin
 @pytest.mark.parametrize("kind", CAP_KINDS)
 def test_connection_refused_is_stable_proof_of_no_send_and_the_first_send_proceeds(db, sim, kind):
     partner_id, product_id, run, expected, landed = _prepare(db, sim, kind)
+    before = _money(db, partner_id, product_id)
     start = _mutations(sim)
     with pytest.raises(AppError):
         run(_Lose(gateway(sim), "update_user", httpx.ConnectError("refused"), applied=False))
     op = _op(db, kind)
     assert op.status == "pending" and money_sync._loads(op)["panel_sent"] is False
     charged = _money(db, partner_id, product_id)
+    if kind == "decrease":
+        assert charged == before and _refund_ledgers(db, kind) == []
     assert _restart_and_reconcile(db, sim) == 1
     assert _op(db, kind).status == "completed" and landed()
     assert tuple(a - b for a, b in zip(_mutations(sim), start)) == expected
-    assert _money(db, partner_id, product_id) == charged and _rollbacks(db) == 0
+    assert _money(db, partner_id, product_id) == _after_refund(db, _op(db, kind), kind, charged)
+    assert _rollbacks(db) == 0
 
 
 @pytest.mark.parametrize("kind", CAP_KINDS)
 def test_unproven_change_retried_by_the_admin_is_sent_exactly_once(db, sim, kind):
     partner_id, product_id, run, expected, landed = _prepare(db, sim, kind)
+    before = _money(db, partner_id, product_id)
     start = _mutations(sim)
     with pytest.raises(AppError):
         run(_Lose(gateway(sim), "update_user", httpx.ReadTimeout("lost"), applied=False))
@@ -202,13 +207,21 @@ def test_unproven_change_retried_by_the_admin_is_sent_exactly_once(db, sim, kind
     with pytest.raises(AppError, match="توضیح"):
         money_sync.resolve_attention(db, _op(db, kind).id, decision="retry", actor=ADMIN, note=" ",
                                      gateway_factory=_factory(sim))
-    assert _blocks(db, sim, kind) == {}
+    blocks = _blocks(db, sim, kind)
+    if kind == "decrease":
+        assert set(blocks) == {"close"} and "قطعی نیست" in blocks["close"]
+        assert charged == before and _refund_ledgers(db, kind) == []
+        with pytest.raises(AppError, match="قطعی نیست"):
+            _decide(db, sim, kind, "close")
+    else:
+        assert blocks == {}
     _decide(db, sim, kind, "retry")
     assert _restart_and_reconcile(db, sim) == 1
     assert _restart_and_reconcile(db, sim) == 0
     assert _op(db, kind).status == "completed" and landed()
     assert tuple(a - b for a, b in zip(_mutations(sim), start)) == expected
-    assert _money(db, partner_id, product_id) == charged and _rollbacks(db) == 0
+    assert _money(db, partner_id, product_id) == _after_refund(db, _op(db, kind), kind, charged)
+    assert _rollbacks(db) == 0
 
 
 def test_unproven_change_for_a_user_deleted_on_the_panel_offers_only_close(db, sim):
@@ -246,6 +259,7 @@ def test_unreadable_panel_blocks_a_manual_retry(db, sim):
 
 def _stuck_delete(db, sim):
     partner_id, product_id, run, _expected, _landed = _prepare(db, sim, "delete")
+    before = _money(db, partner_id, product_id)
     (uid,) = sim.users
     calls = []
 
@@ -257,7 +271,7 @@ def _stuck_delete(db, sim):
 
     with pytest.raises(AppError):
         run(_client(flaky))
-    refunded = _money(db, partner_id, product_id)
+    assert _money(db, partner_id, product_id) == before and _refund_ledgers(db, "delete") == []
     for _ in range(5):
         money_sync.reconcile_pending(db, lambda _panel: _client(flaky))
     op = _op(db, "delete")
@@ -265,8 +279,9 @@ def _stuck_delete(db, sim):
     assert "چند بار" in op.last_error
     assert len(calls) == 1 + money_sync.MAX_AUTO_RESENDS
     assert uid in sim.users
-    assert _money(db, partner_id, product_id) == refunded and _rollbacks(db) == 0
-    return partner_id, product_id, uid, refunded
+    assert _money(db, partner_id, product_id) == before and _rollbacks(db) == 0
+    assert _refund_ledgers(db, "delete") == []
+    return partner_id, product_id, uid, before
 
 
 def test_repeated_uncertain_delete_failures_stop_at_attention(db, sim):
@@ -274,29 +289,31 @@ def test_repeated_uncertain_delete_failures_stop_at_attention(db, sim):
 
 
 def test_repeated_delete_failure_with_the_user_still_there_allows_only_retry(db, sim):
-    partner_id, product_id, uid, refunded = _stuck_delete(db, sim)
+    partner_id, product_id, uid, before = _stuck_delete(db, sim)
     blocks = _blocks(db, sim, "delete")
-    assert "retry" not in blocks and "هنوز روی پنل" in blocks["close"]
-    with pytest.raises(AppError, match="هنوز روی پنل"):
+    assert set(blocks) == {"close"} and "قطعی نیست" in blocks["close"]
+    with pytest.raises(AppError, match="قطعی نیست"):
         _decide(db, sim, "delete", "close")
     _decide(db, sim, "delete", "retry")
     assert _restart_and_reconcile(db, sim) == 1
-    assert _op(db, "delete").status == "completed" and uid not in sim.users
-    assert _money(db, partner_id, product_id) == refunded and _rollbacks(db) == 0
+    op = _op(db, "delete")
+    assert op.status == "completed" and uid not in sim.users
+    assert _money(db, partner_id, product_id) == _after_refund(db, op, "delete", before) and _rollbacks(db) == 0
 
 
-def test_repeated_delete_failure_with_the_user_gone_completes_on_retry_without_money(db, sim):
-    partner_id, product_id, uid, refunded = _stuck_delete(db, sim)
+def test_repeated_delete_failure_with_the_user_gone_releases_credit_without_resend(db, sim):
+    partner_id, product_id, uid, before = _stuck_delete(db, sim)
     del sim.users[uid]
     deleted = list(sim.deleted)
     blocks = _blocks(db, sim, "delete")
-    assert "retry" not in blocks and "حذف شده" in blocks["close"]
-    with pytest.raises(AppError, match="حذف شده"):
+    assert set(blocks) == {"close"} and "اعتبار رزروشده" in blocks["close"]
+    with pytest.raises(AppError, match="اعتبار رزروشده"):
         _decide(db, sim, "delete", "close")
     _decide(db, sim, "delete", "retry")
     assert _restart_and_reconcile(db, sim) == 1
-    assert _op(db, "delete").status == "completed" and sim.deleted == deleted
-    assert _money(db, partner_id, product_id) == refunded and _rollbacks(db) == 0
+    op = _op(db, "delete")
+    assert op.status == "completed" and sim.deleted == deleted
+    assert _money(db, partner_id, product_id) == _after_refund(db, op, "delete", before) and _rollbacks(db) == 0
 
 
 def test_repeated_uncertain_generate_failures_stop_at_attention(db, sim):

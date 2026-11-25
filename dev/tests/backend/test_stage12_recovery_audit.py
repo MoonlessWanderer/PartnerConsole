@@ -29,8 +29,9 @@ from app.services.subscriptions import (
     set_partner_ban,
     set_subscription_ban,
 )
-from test_billing import GB, NOW, PanelSim
+from test_billing import GB, NOW, PanelSim, _legacy_refund, _refund_ledgers, gateway
 from test_stage11_db_failure import (
+    _after_refund,
     _money,
     _mutations,
     _op,
@@ -39,7 +40,6 @@ from test_stage11_db_failure import (
     _rollbacks,
 )
 from test_stage11_reproductions import _make_sub, db  # noqa: F401
-from test_billing import gateway
 
 
 @pytest.fixture()
@@ -111,7 +111,10 @@ def test_proxy_error_then_late_landing_is_not_refunded(db, sim, kind, error):
     assert op.status == ("attention" if kind in CAP_KINDS else "pending"), op.last_error
     assert _rollbacks(db) == 0
     charged = _money(db, partner_id, product_id)
-    assert charged != before
+    if kind in {"decrease", "delete"}:
+        assert charged == before and _refund_ledgers(db, kind) == []
+    else:
+        assert charged != before
     late.land()
     assert _restart_and_reconcile(db, sim) == (0 if kind in CAP_KINDS else 1)
     assert tuple(a - b for a, b in zip(_mutations(sim), start)) == expected
@@ -122,18 +125,23 @@ def test_proxy_error_then_late_landing_is_not_refunded(db, sim, kind, error):
     op = _op(db, kind)
     assert op.status == "completed", op.last_error
     assert _rollbacks(db) == 0
-    assert _money(db, partner_id, product_id) == charged
+    assert _money(db, partner_id, product_id) == _after_refund(db, op, kind, charged)
+    if kind in {"decrease", "delete"}:
+        assert tuple(a - b for a, b in zip(_mutations(sim), start)) == expected
     assert landed()
 
 
 @pytest.mark.parametrize("kind", list(STALL_PATH))
 def test_proxy_error_without_landing_is_never_resent_automatically_for_a_cap_change(db, sim, kind):
     partner_id, product_id, run, expected, landed = _prepare(db, sim, kind)
+    before = _money(db, partner_id, product_id)
     start = _mutations(sim)
     late = LateLanding(sim, STALL_PATH[kind], GATEWAY_ERRORS["html_504"])
     with pytest.raises(AppError):
         run(late.client())
     charged = _money(db, partner_id, product_id)
+    if kind in {"decrease", "delete"}:
+        assert charged == before and _refund_ledgers(db, kind) == []
     late.held = None
     if kind in CAP_KINDS:
         # The panel shows the old value: no proof the request never ran, so nothing is resent.
@@ -145,7 +153,7 @@ def test_proxy_error_without_landing_is_never_resent_automatically_for_a_cap_cha
     op = _op(db, kind)
     assert op.status == "completed", op.last_error
     assert _rollbacks(db) == 0
-    assert _money(db, partner_id, product_id) == charged
+    assert _money(db, partner_id, product_id) == _after_refund(db, op, kind, charged)
     assert tuple(a - b for a, b in zip(_mutations(sim), start)) == expected
     assert landed()
 
@@ -435,6 +443,7 @@ class _Crash(BaseException):
 def test_crash_between_marker_commit_and_send(db, sim, kind, method):
     """The marker is committed, then the worker dies before the request leaves."""
     partner_id, product_id, run, expected, landed = _prepare(db, sim, kind)
+    before = _money(db, partner_id, product_id)
     start = _mutations(sim)
     with pytest.raises(_Crash):
         run(_Lose(gateway(sim), method, _Crash(), applied=False))
@@ -443,15 +452,17 @@ def test_crash_between_marker_commit_and_send(db, sim, kind, method):
     assert data.get("panel_sent") or data.get("reset_sent")
     after_crash = _mutations(sim)
     charged = _money(db, partner_id, product_id)
+    if kind == "delete":
+        assert charged == before and _refund_ledgers(db, kind) == []
     _expire_lease(db, op.id)
     _restart_and_reconcile(db, sim)
     op = _op(db, kind)
-    assert _rollbacks(db) == 0 and _money(db, partner_id, product_id) == charged
+    assert _rollbacks(db) == 0 and _money(db, partner_id, product_id) == _after_refund(db, op, kind, charged)
     if kind != "delete":
         # The marker says the request may have left; the old state cannot prove it did not.
         assert op.status == "attention" and _mutations(sim) == after_crash
     else:
-        # A user still on the panel proves the delete did not run; deleting again is harmless.
+        # A repeated delete of the same verified owner can complete, with credit after proven absence.
         assert op.status == "completed", op.last_error
         assert tuple(a - b for a, b in zip(_mutations(sim), start)) == expected and landed()
 
@@ -466,34 +477,39 @@ def _delete_setup(db, sim):
 
 def test_delete_executed_but_response_lost_completes_without_resend(db, sim):
     partner_id, product_id, run, uid = _delete_setup(db, sim)
+    before = _money(db, partner_id, product_id)
     with pytest.raises(AppError):
         run(_Lose(gateway(sim), "delete_user", httpx.ReadTimeout("lost"), applied=True))
-    refunded = _money(db, partner_id, product_id)
-    _restart_and_reconcile(db, sim)
-    assert _op(db, "delete").status == "completed"
+    assert _money(db, partner_id, product_id) == before and _refund_ledgers(db, "delete") == []
+    assert _restart_and_reconcile(db, sim) == 1
+    op = _op(db, "delete")
+    assert op.status == "completed"
     assert sim.deleted == [uid] and _rollbacks(db) == 0
-    assert _money(db, partner_id, product_id) == refunded
+    assert _money(db, partner_id, product_id) == _after_refund(db, op, "delete", before)
     db.rollback()
     assert db.scalar(select(Subscription.id)) is None
 
 
 def test_delete_not_executed_and_user_still_there_is_sent_once_more(db, sim):
     partner_id, product_id, run, uid = _delete_setup(db, sim)
+    before = _money(db, partner_id, product_id)
     with pytest.raises(AppError):
         run(_Lose(gateway(sim), "delete_user", httpx.ReadTimeout("lost"), applied=False))
     assert uid in sim.users
-    refunded = _money(db, partner_id, product_id)
-    _restart_and_reconcile(db, sim)
-    assert _op(db, "delete").status == "completed"
+    assert _money(db, partner_id, product_id) == before and _refund_ledgers(db, "delete") == []
+    assert _restart_and_reconcile(db, sim) == 1
+    op = _op(db, "delete")
+    assert op.status == "completed"
     assert sim.deleted == [uid] and _rollbacks(db) == 0
-    assert _money(db, partner_id, product_id) == refunded
+    assert _money(db, partner_id, product_id) == _after_refund(db, op, "delete", before)
 
 
 def test_delete_with_an_invalid_lookup_moves_nothing(db, sim):
     partner_id, product_id, run, uid = _delete_setup(db, sim)
+    before = _money(db, partner_id, product_id)
     with pytest.raises(AppError):
         run(_Lose(gateway(sim), "delete_user", httpx.ReadTimeout("lost"), applied=False))
-    refunded = _money(db, partner_id, product_id)
+    assert _money(db, partner_id, product_id) == before and _refund_ledgers(db, "delete") == []
 
     def broken(request):
         if request.url.path.endswith("/user/fetch"):
@@ -505,25 +521,29 @@ def test_delete_with_an_invalid_lookup_moves_nothing(db, sim):
     money_sync.reconcile_pending(db, lambda _panel: client)
     assert _op(db, "delete").status == "pending"
     assert uid in sim.users and sim.deleted == []
-    assert _money(db, partner_id, product_id) == refunded and _rollbacks(db) == 0
+    assert _money(db, partner_id, product_id) == before and _rollbacks(db) == 0
+    assert _refund_ledgers(db, "delete") == []
 
 
 def test_concurrent_delete_waits_for_the_lease_and_deletes_once(db, sim):
     partner_id, product_id, run, uid = _delete_setup(db, sim)
+    before = _money(db, partner_id, product_id)
     with pytest.raises(AppError):
         run(_Lose(gateway(sim), "delete_user", httpx.ReadTimeout("lost"), applied=False))
-    refunded = _money(db, partner_id, product_id)
+    assert _money(db, partner_id, product_id) == before and _refund_ledgers(db, "delete") == []
     op = _op(db, "delete")
     assert money_sync._claim(db, op.id) is not None  # another worker holds it
     with pytest.raises(AppError) as busy:
         run(gateway(sim))
     assert busy.value.status_code == 503 and sim.deleted == []
+    assert _money(db, partner_id, product_id) == before and _refund_ledgers(db, "delete") == []
     _expire_lease(db, op.id)
     run(gateway(sim))
     with pytest.raises(AppError):
         run(gateway(sim))
-    assert sim.deleted == [uid] and _op(db, "delete").status == "completed"
-    assert _money(db, partner_id, product_id) == refunded and _rollbacks(db) == 0
+    op = _op(db, "delete")
+    assert sim.deleted == [uid] and op.status == "completed"
+    assert _money(db, partner_id, product_id) == _after_refund(db, op, "delete", before) and _rollbacks(db) == 0
 
 
 # --- 503 and duplicate requests ----------------------------------------------------------
@@ -535,11 +555,14 @@ LOST_METHOD = {"create": "update_user", "increase": "update_user", "renewal": "u
 @pytest.mark.parametrize("kind", list(LOST_METHOD))
 def test_same_request_sent_again_after_503_charges_and_applies_once(db, sim, kind):
     partner_id, product_id, run, expected, landed = _prepare(db, sim, kind)
+    before = _money(db, partner_id, product_id)
     start = _mutations(sim)
     with pytest.raises(AppError) as first:
         run(_Lose(gateway(sim), LOST_METHOD[kind], httpx.ReadTimeout("lost"), applied=True))
     assert first.value.status_code == 503
     charged = _money(db, partner_id, product_id)
+    if kind in {"decrease", "delete"}:
+        assert charged == before and _refund_ledgers(db, kind) == []
     if kind == "reset":
         # Lower usage after a lost reset response is no proof it was ours: held, never re-sent.
         with pytest.raises(AppError) as second:
@@ -548,7 +571,8 @@ def test_same_request_sent_again_after_503_charges_and_applies_once(db, sim, kin
     else:
         run(gateway(sim))
         assert _op(db, kind).status == "completed"
-    assert _money(db, partner_id, product_id) == charged and _rollbacks(db) == 0
+    assert _money(db, partner_id, product_id) == _after_refund(db, _op(db, kind), kind, charged)
+    assert _rollbacks(db) == 0
     assert tuple(a - b for a, b in zip(_mutations(sim), start)) == expected and landed()
     ops = db.scalars(select(PanelOperation).where(PanelOperation.kind != "create")).all() if kind != "create" else []
     assert len(ops) == (1 if kind != "create" else 0)
@@ -605,16 +629,20 @@ def test_legacy_increase_without_marker_is_never_resent_blindly(db, sim, applied
 
 
 def test_legacy_delete_without_marker_that_already_landed_is_not_sent_again(db, sim):
-    partner_id, product_id, run, uid = _delete_setup(db, sim)
-    with pytest.raises(AppError):
-        run(_Lose(gateway(sim), "delete_user", httpx.ReadTimeout("lost"), applied=True))
-    op = _op(db, "delete")
+    partner_id, product_id, _run, uid = _delete_setup(db, sim)
+    sim.users[uid]["u"] = 4 * GB
+    op = _legacy_refund(db, db.scalars(select(Subscription)).one(), "delete")
     data = json.loads(op.payload)
     data.pop("panel_sent", None)
     op.payload = json.dumps(data)
     db.commit()
     refunded = _money(db, partner_id, product_id)
-    _restart_and_reconcile(db, sim)
+    assert refunded[1] == (16, 10)
+    ledger_ids = [row.id for row in _refund_ledgers(db, "delete")]
+    with gateway(sim) as client:
+        client.delete_user(uid)
+    assert _restart_and_reconcile(db, sim) == 1
     assert _op(db, "delete").status == "completed"
     assert sim.deleted == [uid] and _rollbacks(db) == 0
     assert _money(db, partner_id, product_id) == refunded
+    assert [row.id for row in _refund_ledgers(db, "delete")] == ledger_ids

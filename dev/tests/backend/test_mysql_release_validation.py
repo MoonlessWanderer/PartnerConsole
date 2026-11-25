@@ -5,8 +5,8 @@ names an empty approved base schema; each test creates its own child schema
 ``<base>_<n>`` with CREATE DATABASE (the test account must be limited to the
 partnerpanel_test_ prefix). Schemas are never dropped or cleared.
 
-The financial, concurrency and recovery suites of test_billing, test_stage35 and
-test_stage6_http are replayed here against MySQL; panels are simulated locally.
+The financial, concurrency and recovery suites are replayed against MySQL;
+panels are simulated locally.
 """
 import inspect as pyinspect
 import itertools
@@ -31,6 +31,9 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import sessionmaker
 
 import test_billing
+import test_stage11_db_failure
+import test_stage12_policy
+import test_stage12_recovery_audit
 import test_stage35
 import test_stage6_http
 from app.core.config import settings
@@ -175,6 +178,9 @@ def _replayed(module, excluded=()):
 # The child script of this test hard-codes SQLite; a MySQL multi-process
 # equivalent is defined below.
 globals().update(_replayed(test_billing, excluded={"test_two_processes_cannot_lose_a_balance_update"}))
+globals().update(_replayed(test_stage11_db_failure))
+globals().update(_replayed(test_stage12_policy))
+globals().update(_replayed(test_stage12_recovery_audit))
 globals().update(_replayed(test_stage35))
 globals().update(_replayed(test_stage6_http))
 
